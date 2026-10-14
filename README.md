@@ -1,133 +1,420 @@
-# Smart Glossary Filler
+# 📘 Smart Glossary Filler
 
-A Chrome extension for translators and fan-translation teams. Paste a block of glossary
-terms in a fixed format, and it files each term into the right columns of a live Google
-Sheet — picking the first empty row, skipping fuzzy duplicates, and respecting per-category
-row boundaries.
+<p align="center">
+  <img src="icon128.png" width="130" height="130" alt="Smart Glossary Filler Logo">
+  <br>
+  <b>Smart Glossary Filler</b> — Glossary Capture &amp; Google Sheets Automation Engine for Translation Teams
+</p>
 
-Everything runs locally. There is no server, no OAuth app, no API key: sheets are read with
-the browser's own Google session and written by driving the page the way a person would.
+<p align="center">
+  <img src="https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4?style=flat&logo=googlechrome&logoColor=white" alt="Manifest V3">
+  <img src="https://img.shields.io/badge/JavaScript-ES2020-F7DF1E?style=flat&logo=javascript&logoColor=black" alt="JavaScript">
+  <img src="https://img.shields.io/badge/Google%20Sheets-automated-34A853?style=flat&logo=googlesheets&logoColor=white" alt="Google Sheets">
+  <img src="https://img.shields.io/badge/SheetJS-0.20.3-brightgreen?style=flat" alt="SheetJS">
+  <img src="https://img.shields.io/badge/Chart.js-4.4.1-FF6384?style=flat&logo=chartdotjs&logoColor=white" alt="Chart.js">
+  <br>
+  <img src="https://img.shields.io/badge/version-1.4.0-blue?style=flat" alt="Version 1.4.0">
+  <img src="https://img.shields.io/badge/build-none%20required-success?style=flat" alt="No build step">
+  <img src="https://img.shields.io/badge/data-100%25%20local-success?style=flat" alt="100% local">
+  <img src="https://img.shields.io/badge/API%20keys-zero-informational?style=flat" alt="Zero API keys">
+  <img src="https://img.shields.io/badge/license-not%20chosen-lightgrey?style=flat" alt="License">
+</p>
 
-* **Version:** 1.4.0
-* **Manifest:** V3
-* **Browser:** Chrome (or any Chromium browser with `chrome.debugger` and offscreen documents — Edge, Brave)
+**Smart Glossary Filler** is a Manifest V3 Chrome extension that turns a block of glossary
+text into filled rows of a live Google Sheet. It parses terms into 12 fixed categories, maps
+each category to its own column group and row range, rejects fuzzy duplicates against the
+sheet's current contents, finds the first genuinely empty row, and writes the values by
+driving the real page — a Name Box jump and a true <kbd>Ctrl</kbd>+<kbd>V</kbd>.
 
----
-
-## Table of contents
-
-* [Why this exists](#why-this-exists)
-* [Install](#install)
-* [Quick start](#quick-start)
-* [Glossary text format](#glossary-text-format)
-* [The 12 categories](#the-12-categories)
-* [The dashboard](#the-dashboard)
-* [How the writer works](#how-the-writer-works)
-* [Duplicate detection](#duplicate-detection)
-* [Empty-row selection](#empty-row-selection)
-* [Permissions](#permissions)
-* [Data, privacy and storage](#data-privacy-and-storage)
-* [Export and import](#export-and-import)
-* [Project layout](#project-layout)
-* [Troubleshooting](#troubleshooting)
-* [Known limitations](#known-limitations)
-* [Development](#development)
-* [License](#license)
+There is no server, no OAuth app, no API key and no telemetry. Sheets are read through the
+Google session already in your browser, and written the way a person would write them.
 
 ---
 
-## Why this exists
+## 📑 Table of Contents
+
+- [Why This Exists](#-why-this-exists)
+- [Key Features](#-key-features)
+- [Screenshots](#-screenshots)
+- [System Architecture](#-system-architecture)
+- [How a Push Works](#-how-a-push-works)
+- [Term Lifecycle](#-term-lifecycle)
+- [Tech Stack](#-tech-stack)
+- [Prerequisites](#-prerequisites)
+- [Quick Start](#-quick-start)
+- [Glossary Text Format](#-glossary-text-format)
+- [The 12 Categories](#-the-12-categories)
+- [Column Mapping](#-column-mapping)
+- [The Dashboard](#-the-dashboard)
+- [Duplicate Detection](#-duplicate-detection)
+- [Empty-Row Selection](#-empty-row-selection)
+- [Permissions](#-permissions)
+- [Data, Privacy and Storage](#-data-privacy-and-storage)
+- [Export and Import](#-export-and-import)
+- [Project Structure](#-project-structure)
+- [Troubleshooting](#-troubleshooting)
+- [Known Limitations](#-known-limitations)
+- [Development](#-development)
+- [License](#-license)
+
+---
+
+## 🎯 Why This Exists
 
 Translating serialised fiction means maintaining a glossary: every character name, sect,
 skill and honorific has to land in a spreadsheet, in the right column group, without
-duplicates. Doing that by hand for a few hundred terms per volume is tedious and
-error-prone.
+duplicates. Doing that by hand for a few hundred terms per volume is slow and error-prone.
 
-The hard part is writing into Google Sheets. Sheets paints its grid on a `<canvas>`, so
-there is no cell element to set, and a `ClipboardEvent` constructed in JavaScript carries no
-user gesture — Sheets ignores it. This extension therefore does two things:
+The hard part is **writing** into Google Sheets:
 
-1. **Reads** the sheet by downloading an `.xlsx` snapshot through your existing Google
-   session, and analysing it offline with SheetJS. That is how it knows which rows are empty
-   and which terms already exist, without any API quota.
-2. **Writes** by driving the real page through the Chrome DevTools Protocol: it puts a cell
-   reference in the Name Box, presses a genuine <kbd>Enter</kbd>, stages the value on the
-   clipboard, and presses a genuine <kbd>Ctrl</kbd>+<kbd>V</kbd>. Sheets handles the paste
-   itself, exactly as it would for a human.
+| Obstacle | Why the obvious approach fails |
+| :--- | :--- |
+| The grid is a `<canvas>` | There is no cell element to set a value on. |
+| Synthetic clipboard events | A `ClipboardEvent` built in JavaScript carries no user gesture, so Sheets drops it. |
+| The Sheets API | Needs an OAuth app, a client secret, consent screens and quota — for a personal tool. |
 
----
+So this extension splits the problem in two:
 
-## Install
-
-Not on the Chrome Web Store — load it unpacked.
-
-1. Download or clone this repository.
-2. Open `chrome://extensions`.
-3. Turn on **Developer mode** (top right).
-4. Click **Load unpacked** and select the folder containing `manifest.json`.
-5. The dashboard opens automatically on install. Click the toolbar icon to reopen it.
-
-Be signed in to the Google account that owns the target sheet, in the same browser profile.
-
-> After editing any source file, press the reload icon on the extension's card in
-> `chrome://extensions`. The service worker does not hot-reload.
+- **Reading** — downloads the sheet as an `.xlsx` snapshot through your existing Google
+  session and analyses it offline with SheetJS. That is how it knows which rows are empty
+  and which terms already exist, with zero API quota.
+- **Writing** — drives the live page through the Chrome DevTools Protocol: write the cell
+  reference into the Name Box, press a genuine <kbd>Enter</kbd>, stage the value on the
+  clipboard, press a genuine <kbd>Ctrl</kbd>+<kbd>V</kbd>. Sheets performs the paste itself.
 
 ---
 
-## Quick start
+## 🌟 Key Features
 
-1. **Settings → Detect accounts.** The extension probes `docs.google.com/spreadsheets/u/0…7/`
-   with your own cookies and lists the Google accounts signed in to this browser. Each one
-   maps to a `/u/{n}/` index, which is how the right account is used later.
-2. **Template Studio → New template.** Give it a name, optionally a logo, and paste the URL
-   of a representative sheet. Click **Fetch preview** — the sheet renders as an HTML table
-   with its real fill colours.
-3. **Map the columns.** Click a mapping box on the left (for example *Character Names →
-   Source col*), then click the matching cell in the preview. The box fills in. Each of the
-   12 categories takes up to five values:
+### 📝 1. Strict Glossary Parser
+- **One fixed line grammar** — `* Category: - [KR] "Source" → "Target (Notes)"` — with tolerant
+  input: `→ ⇒ -> =>` arrows, `- – — • *` bullets, straight or curly quotes, optional labels.
+- **Markdown-aware:** `**bold**` and `__italics__` are stripped before matching, so LLM output
+  pastes verbatim, and `**12. Other Terms**` headings set the category for the block beneath.
+- **Alias resolution:** singular, plural, numbered or shorthand labels all fold onto the 12
+  canonical categories — `Term`, `Org Name`, `System/Level Term`, `SFX`, `Clan`, `Realm`.
+- **Missing-pair rule:** a line with a source but no target — or the reverse — is *never*
+  queued. It is skipped and the reason is logged. A half-entry is worse than no entry.
+- **Prose immunity:** a heading only switches the category when it genuinely names one of the
+  12, so narrative text between blocks cannot hijack the lines that follow.
 
-   | Field | Meaning |
-   | --- | --- |
-   | Source col | Column for the original term (e.g. `B`) |
-   | Target col | Column for the translation (e.g. `C`) |
-   | Notes col | Column for the parenthetical note (e.g. `D`) |
-   | Start row | First data row, below your headers (e.g. `3`) |
-   | End row | Optional. The push stops rather than writing past it |
+### 🗂 2. Templates, Folders and Per-File Overrides
+- **Template Studio:** describe a sheet layout once — 12 categories × 5 fields — and reuse it
+  across every file. Templates carry an optional logo image.
+- **Colour-accurate preview:** the fetched `.xlsx` renders as an HTML table with its original
+  fill colours, font weights and alignment, read from SheetJS cell styles.
+- **Click-to-map:** click a mapping box, then click a cell in the preview. Mapped cells are
+  outlined live in the grid.
+- **Nested workspace:** folders inside folders, file tiles with logos, bound accounts and
+  custom links (wiki, raws, comic).
+- **Override, don't fork:** a file stores only the fields that differ from its template;
+  inherited values show greyed as placeholders.
 
-4. **Workspace → New file.** Point it at the live sheet, bind a Google account, choose the
-   template. Per-file overrides let one sheet differ from the template without editing it.
-5. **Queue.** Paste your glossary text and click **Add to queue**, or turn on **Watch
-   clipboard** and just copy text anywhere.
-6. **Push selected terms.** A small unfocused window opens, fills the cells, and closes.
+### ✍️ 3. Real Paste Writer with Self-Verification
+- **Genuine <kbd>Ctrl</kbd>+<kbd>V</kbd>** via `Input.dispatchKeyEvent` with `commands: ["paste"]`,
+  which invokes the renderer's own edit command — no hidden input to locate, no private class
+  names to depend on.
+- **Keystroke fallback:** `Input.insertText`, then per-character `char` events, used
+  automatically if paste is unavailable.
+- **Read-back verification:** the first write of every push is copied back off the grid with
+  <kbd>Ctrl</kbd>+<kbd>C</kbd> and compared. Reformatted values pass; an empty cell triggers
+  the fallback and, failing that, a precise error.
+- **Clipboard self-test** runs first, so an unreadable clipboard can never be mistaken for an
+  empty cell.
+- **Non-stealing window:** the sheet opens small and **unfocused** with
+  `Emulation.setFocusEmulationEnabled`, so a push never grabs your keyboard or mouse.
+- **Never claims an unobservable write.** This is the core design rule.
+
+### 🧮 4. Fuzzy Duplicate Prevention
+- **Normalised Levenshtein similarity** at a **0.88** threshold, compared against both the
+  source and target columns of the live snapshot.
+- Normalisation drops case, whitespace, quotes and punctuation, so `"Kim Cheol-su"` and
+  `kim cheolsu` collide as intended.
+- In-batch awareness: a term appearing twice in one paste is written once.
+
+### 📐 5. Boundary-Aware Row Placement
+- Finds the first row where **every** mapped column is blank, from `startRow` onward.
+- Honours an optional `endRow` per category, so several categories share one sheet in
+  side-by-side column groups, each with its own vertical range.
+- Rows claimed earlier in the same push are never reused.
+
+### 📋 6. Capture From Anywhere
+- Paste box in the dashboard, with a live added/skipped count.
+- **Clipboard watcher** — polls every 30 s and captures anything matching the glossary
+  pattern, automatically paused during a push.
+- **Right-click → Capture glossary selection** on any page.
+
+### 📊 7. Logs, Stats and Portability
+- **Activity log:** every add, duplicate, skip and error with timestamps and level filters,
+  written to be diagnostic rather than decorative.
+- **Stats:** 14-day trend lines and per-folder breakdowns via Chart.js.
+- **ZIP export/import:** per file, per folder or everything, snapshots included. Import
+  **merges** — it fills gaps and never clobbers local edits.
+- **Dark and light glassmorphic UI.**
 
 ---
 
-## Glossary text format
+## 📸 Screenshots
 
-One term per line. The category can be a label on the line itself, or a heading above a
+<!--
+  Drop your own PNGs into docs/screenshots/ and uncomment the block below.
+  Blur or crop the sheet URL first: a Google document ID is a capability, and
+  anyone who has it can open a link-shared file.
+
+<p align="center">
+  <img src="docs/screenshots/workspace.png" width="48%" alt="Workspace">
+  <img src="docs/screenshots/template-studio.png" width="48%" alt="Template Studio">
+</p>
+<p align="center">
+  <img src="docs/screenshots/queue.png" width="48%" alt="Queue">
+  <img src="docs/screenshots/stats.png" width="48%" alt="Stats">
+</p>
+-->
+
+> _Screenshots pending — see the comment in this section for where to add them._
+
+---
+
+## 🏗 System Architecture
+
+```mermaid
+flowchart TD
+    subgraph UI["Interfaces"]
+        Dash["Full-page Dashboard<br/>Workspace · Studio · Queue · Stats"]
+        Ctx["Context Menu<br/>Capture glossary selection"]
+        Clip["System Clipboard<br/>watched every 30s"]
+    end
+
+    subgraph Core["Extension Core"]
+        SW["Service Worker<br/>background.js<br/>orchestration · snapshots · row finding"]
+        Shared["shared.js<br/>parser · categories · Levenshtein · URL helpers"]
+        Driver["sheets-driver.js<br/>DevTools Protocol primitives"]
+        Off["Offscreen Document<br/>offscreen.js · clipboard read + write"]
+    end
+
+    subgraph Store["Local Storage"]
+        Local[("chrome.storage.local<br/>templates · folders · files<br/>queue · snapshots · logs · stats")]
+        Session[("chrome.storage.session<br/>lastClip · pushing flag")]
+    end
+
+    subgraph Ext["Google — your own session"]
+        Export["docs.google.com/export?format=xlsx<br/>snapshot download"]
+        Live["Live Sheets Tab<br/>canvas grid"]
+    end
+
+    Dash -->|"runtime messages"| SW
+    Ctx -->|"selection text"| SW
+    Clip -->|"OFFSCREEN_POLL"| Off
+    Off -->|"CLIPBOARD_TEXT"| SW
+
+    SW --> Shared
+    SW --> Driver
+    SW <-->|"stage · read back"| Off
+    SW <-->|"read + write state"| Local
+    SW <-->|"push in progress"| Session
+    Dash <-->|"render state"| Local
+
+    SW -->|"cookies, no API key"| Export
+    Driver -->|"chrome.debugger · CDP"| Live
+    Driver -->|"chrome.scripting · read Name Box"| Live
+    Off -.->|"clipboard staged for Ctrl+V"| Live
+```
+
+### Module responsibilities
+
+| Module | Role | Notes |
+| :--- | :--- | :--- |
+| `background.js` | Service worker. Snapshot fetch, account detection, empty-row search, duplicate checks, clipboard plumbing, push orchestration. | The only place that decides *what* to write. |
+| `sheets-driver.js` | DevTools Protocol primitives: attach, readiness, cell navigation, paste/copy, keystroke typing. | The only place that knows *how* to write. |
+| `shared.js` | Categories and aliases, schema defaults, the strict parser, Levenshtein, Google URL and column helpers, template/override merge. | Loaded by both the worker and the dashboard — **must stay DOM-free**. |
+| `offscreen.js` | Clipboard read and write. | Exists because a service worker has no DOM. |
+| `dashboard.js` | All UI: workspace, studio, queue, logs, stats, settings, ZIP. | Talks to the worker by runtime messages only. |
+
+---
+
+## 🔁 How a Push Works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as Dashboard
+    participant SW as Service Worker
+    participant G as Google Export
+    participant O as Offscreen Doc
+    participant T as Sheets Tab
+
+    D->>SW: RUN_PUSH job + selected entries
+    SW->>G: GET export?format=xlsx with your cookies
+    G-->>SW: .xlsx snapshot
+    Note over SW: SheetJS parse · pick sheet by live tab name
+
+    SW->>T: windows.create small and UNFOCUSED
+    SW->>T: debugger.attach + focus emulation
+    SW->>T: wait until Name Box shows a selection
+    SW->>O: clipboard self-test round trip
+    O-->>SW: canPaste · canVerify
+
+    loop for each queued term
+        Note over SW: fuzzy duplicate check vs snapshot
+        Note over SW: findEmptyRow within startRow..endRow
+        loop for each mapped column
+            SW->>T: write ref into Name Box · press Enter
+            T-->>SW: Name Box confirms the cell
+            SW->>O: stage value on clipboard
+            SW->>T: Ctrl+V through the paste edit command
+        end
+    end
+
+    Note over SW,T: first write only — Ctrl+C the cell back and compare
+    SW->>T: detach · optionally close the window
+    SW-->>D: results added · duplicate · skipped
+```
+
+### Verification outcomes
+
+| Read-back | Interpretation | Action |
+| :--- | :--- | :--- |
+| Matches the value | Write path proven | Remaining writes skip verification |
+| Non-empty but reformatted | Sheets coerced a number or date — still a real write | Accepted, stored value logged |
+| Empty | Nothing landed | Switch the push to keystrokes, retry the cell |
+| Empty after both paths | Hard failure | Entry marked skipped with the exact cell and reason |
+| Clipboard self-test failed | Verification impossible | Logged plainly; writes proceed unverified |
+
+---
+
+## 🔄 Term Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Captured: paste · clipboard · context menu
+    Captured --> Skipped: malformed line
+    Captured --> Skipped: missing source or target
+    Captured --> Skipped: unknown category
+    Captured --> Queued: parsed into one of the 12
+    Queued --> Duplicate: similarity 0.88 or higher
+    Queued --> RangeFull: no empty row before endRow
+    Queued --> Unmapped: category has no columns
+    Queued --> Writing: first empty row claimed
+    Writing --> Added: read-back non-empty
+    Writing --> Failed: paste and typing both empty
+    Added --> [*]
+    Duplicate --> [*]
+    Skipped --> [*]
+    RangeFull --> [*]
+    Unmapped --> [*]
+    Failed --> [*]
+```
+
+Every terminal state writes a line to the Activity log and a counter to Stats. Entries that
+reached a terminal state are removed from the queue; nothing silently vanishes.
+
+---
+
+## 💻 Tech Stack
+
+| Component | Technology | Role |
+| :--- | :--- | :--- |
+| **Platform** | Chrome Extension Manifest V3 | Service worker, offscreen document, no persistent background page |
+| **Language** | Vanilla JavaScript (ES2020) | No framework, no bundler, no transpiler |
+| **Spreadsheet engine** | SheetJS `xlsx` 0.20.3 | Reads `.xlsx` with cell styles for the colour-accurate preview |
+| **Automation** | Chrome DevTools Protocol via `chrome.debugger` | `Input.dispatchKeyEvent`, `Input.insertText`, `Emulation.setFocusEmulationEnabled`, `Runtime.evaluate` |
+| **Page inspection** | `chrome.scripting` | Reads the Name Box and the active sheet tab name |
+| **Clipboard** | Offscreen document | `execCommand("copy")` to stage, Clipboard API to read |
+| **Charts** | Chart.js 4.4.1 | 14-day trends and per-folder breakdown |
+| **Archives** | JSZip 3.10.1 | ZIP export and merge import |
+| **Storage** | `chrome.storage.local` + `unlimitedStorage` | All state, including `.xlsx` snapshots |
+| **UI** | Hand-written CSS | Glassmorphic dark and light themes, responsive grid |
+
+All libraries are vendored under `lib/` because MV3 forbids loading remote scripts.
+
+---
+
+## 📋 Prerequisites
+
+1. **Chrome 116+** or any Chromium browser with `chrome.debugger` and offscreen document
+   support (Edge, Brave).
+2. **Signed in** to the Google account that can edit the target sheet, in the same browser
+   profile.
+3. **Edit access** to the sheet — a view-only file cannot be written to.
+4. **No DevTools open** on the sheet tab during a push; only one debugger client can attach.
+5. *(Development only)* **Node.js**, solely for `node --check` syntax checks. Not needed to run.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Install unpacked
+
+```bash
+git clone https://github.com/<your-user>/smart-glossary-filler.git
+cd smart-glossary-filler
+```
+
+1. Open `chrome://extensions`.
+2. Enable **Developer mode** (top right).
+3. Click **Load unpacked** and select the folder containing `manifest.json`.
+4. The dashboard opens automatically. Click the toolbar icon to reopen it later.
+
+> After editing any source file, press the reload icon on the extension's card. The MV3
+> service worker does not hot-reload.
+
+### 2. Detect your Google accounts
+
+**Settings → Detect accounts.** The extension probes
+`docs.google.com/spreadsheets/u/0…7/` with your own cookies and lists the accounts signed in
+to this browser, each mapped to its `/u/{n}/` index — which is what actually selects the
+account for downloads and pushes.
+
+### 3. Build a template
+
+**Template Studio → New template.** Name it, optionally add a logo, paste the URL of a
+representative sheet, then **Fetch preview**.
+
+### 4. Map the columns
+
+Click a mapping box (for example *Character Names → Source col*), then click the matching
+cell in the preview. Repeat for every category you intend to capture.
+
+### 5. Create a file
+
+**Workspace → New file.** Point it at the live sheet, bind an account, pick the template,
+and add any per-file overrides.
+
+### 6. Capture and push
+
+Paste your glossary text into **Queue**, tick the terms you want, and press
+**Push selected terms**. A small unfocused window fills the cells and closes.
+
+---
+
+## 📝 Glossary Text Format
+
+One term per line. The category is either a label on the line itself or a heading above a
 block of lines.
 
 ```
 * Category: - [LANG] "Source" → "Target (Notes)"
 ```
 
-* `LANG` is a two-letter tag, or several separated by slashes: `[KR]`, `[JP]`, `[KR/CH]`.
-* The arrow may be `→`, `⇒`, `->` or `=>`.
-* The bullet may be `-`, `–`, `—`, `•` or `*`.
-* **Notes** are the last trailing `(...)` or `[...]` group of the target.
-* Markdown bold (`**`) and italics (`__`) are stripped before parsing, so AI output pastes
-  verbatim.
-* Quotes are optional; curly quotes are fine.
+| Element | Accepted |
+| :--- | :--- |
+| Category label | Any alias from [the table below](#-the-12-categories), or inherited from a heading |
+| Language tag | Two letters, slash-separated for several: `[KR]`, `[JP]`, `[KR/CH]`, `[KR/CH/JP/ID]` |
+| Arrow | `→` `⇒` `->` `=>` |
+| Bullet | `-` `–` `—` `•` `*` |
+| Quotes | Straight, curly, or none |
+| Notes | The last trailing `(...)` or `[...]` group of the target |
+| Emphasis | `**bold**` and `__italics__` are stripped before parsing |
 
 ### The missing-pair rule
 
 A line with a source but no target — or a target but no source — is **never queued**. It is
 skipped and the reason is written to the Activity log. This is deliberate: a half-entry in a
-glossary is worse than no entry.
+glossary is worse than no entry at all.
 
 ### Examples
 
-```
+```text
 **1. Character Names**
 * Character Name: - [KR] "김철수" → "Kim Cheolsu (protagonist)"
 * Character Name: - [KR] "선인(仙人)" → "Immortals"
@@ -138,14 +425,14 @@ glossary is worse than no entry.
 - [KR] "무명" → "Nameless"
 ```
 
-The last line has no label; it inherits **Other Terms** from the heading above it.
+The last line carries no label; it inherits **Other Terms** from the heading above it. The
+second line keeps `(仙人)` in the source — notes are only taken from the target side.
 
 ### Prompt template
 
-This is the format the parser is built around. Give it to an LLM when extracting terms from
-a chapter:
+Give this to an LLM when extracting terms from a chapter. The parser is built around it:
 
-```
+```text
 **1. Character Names**
 * Character Name: - [KR/CH/JP/ID] "Source" → "Translation (Gender)"
 
@@ -185,166 +472,116 @@ a chapter:
 
 ---
 
-## The 12 categories
+## 🗂 The 12 Categories
 
-Mappings, duplicate checks and row boundaries are all per category. The canonical names are
-fixed, but labels are matched loosely — singular or plural, numbered, decorated, or any
-listed alias.
+Mappings, duplicate checks and row boundaries are all **per category**. The canonical names
+are fixed; the labels that reach them are not.
 
-| # | Category | Labels that resolve to it |
-| --- | --- | --- |
-| 1 | Character Names | `Character Name`, `Character`, `Char`, `Name`, `Person` |
-| 2 | Titles/Honorifics | `Title`, `Honorific` |
-| 3 | Professions/Ranks | `Profession/Rank`, `Profession`, `Rank`, `Job`, `Occupation` |
-| 4 | Guild Names | `Guild Name`, `Guild` |
-| 5 | Organization Names | `Org Name`, `Org`, `Organization`, `Organisation`, `Faction`, `Clan`, `Sect` |
-| 6 | Place Names | `Place Name`, `Place`, `Location` |
-| 7 | Skill Names | `Skill Name`, `Skill`, `Technique` |
-| 8 | Ability Names | `Ability Name`, `Ability` |
-| 9 | Item Names | `Item Name`, `Item`, `Object`, `Equipment` |
-| 10 | System/Cultivation Levels | `System/Level Term`, `System`, `Cultivation`, `Cultivation Level`, `Level`, `Realm` |
-| 11 | Sound Effects (SFX) | `SFX`, `Sound`, `Sound Effect`, `Onomatopoeia` |
-| 12 | Other Terms | `Term`, `Other`, `Other Term`, `Misc`, `Miscellaneous`, `General` |
+| # | Canonical category | Labels that resolve to it |
+| :-: | :--- | :--- |
+| 1 | Character Names | `Character Name` · `Character` · `Char` · `Name` · `Person` |
+| 2 | Titles/Honorifics | `Title` · `Honorific` |
+| 3 | Professions/Ranks | `Profession/Rank` · `Profession` · `Rank` · `Job` · `Occupation` |
+| 4 | Guild Names | `Guild Name` · `Guild` |
+| 5 | Organization Names | `Org Name` · `Org` · `Organization` · `Organisation` · `Faction` · `Clan` · `Sect` |
+| 6 | Place Names | `Place Name` · `Place` · `Location` |
+| 7 | Skill Names | `Skill Name` · `Skill` · `Technique` |
+| 8 | Ability Names | `Ability Name` · `Ability` |
+| 9 | Item Names | `Item Name` · `Item` · `Object` · `Equipment` |
+| 10 | System/Cultivation Levels | `System/Level Term` · `System` · `Cultivation` · `Cultivation Level` · `Level` · `Realm` |
+| 11 | Sound Effects (SFX) | `SFX` · `Sound` · `Sound Effect` · `Onomatopoeia` |
+| 12 | Other Terms | `Term` · `Other` · `Other Term` · `Misc` · `Miscellaneous` · `General` |
 
-Matching is case-insensitive and ignores punctuation, plurals and leading numbering, so
-`12. OTHER TERMS`, `other term` and `Other Terms:` are all the same category. A label that
-resolves to none of the 12 is reported as `Unknown category "…"` rather than guessed at.
-
-A heading only switches the category if it genuinely names one of the 12 — ordinary prose
-between blocks cannot hijack the lines that follow it.
+Matching ignores case, punctuation, plurals and leading numbering, so `12. OTHER TERMS`,
+`other term` and `Other Terms:` are one category. A label resolving to none of the 12 is
+reported as `Unknown category "…"` rather than guessed at. Add your own in
+`CATEGORY_ALIASES` in [`shared.js`](shared.js).
 
 ---
 
-## The dashboard
+## 🎯 Column Mapping
 
-Opened by clicking the toolbar icon. Six views, light and dark theme.
+Each category takes up to five values:
 
-### Workspace
+| Field | Type | Meaning |
+| :--- | :--- | :--- |
+| **Source col** | Column letter | The original term, e.g. `B` |
+| **Target col** | Column letter | The translation, e.g. `C` |
+| **Notes col** | Column letter | The parenthetical note, e.g. `D` |
+| **Start row** | Number | First data row, below your headers, e.g. `3` |
+| **End row** | Number, optional | The push stops rather than writing past it |
 
-Nested folders and file tiles. A **file** is one live sheet plus everything needed to write
-to it: URL, bound Google account, template, per-file mapping overrides, a logo, and custom
-links (wiki, raws, comic). Right-click any tile for open / edit / export / delete.
+A typical multi-group glossary sheet, where each category owns a horizontal band:
 
-### Template Studio
-
-Where column mappings live, so a layout is described once and reused by every file. Includes
-the colour-accurate sheet preview and click-to-map. Templates can carry a logo image, shown
-on the tile.
-
-### Queue
-
-* Paste box for glossary text, with a live count of added and skipped lines.
-* **Watch clipboard** — polls the clipboard every 30 seconds and captures anything matching
-  the glossary pattern. Also available as a right-click context-menu item on selected text.
-* A table of captured terms with per-row checkboxes, so you can push a subset.
-* Two push modes: **Workspace** (a saved file) and **Speedrun** (a URL + account + template,
-  nothing saved).
-
-### Activity log
-
-Every add, duplicate, skip and error, with timestamps and filters. This is the first place
-to look when a push does not do what you expected — failures name the exact cell and reason.
-Capped at 2000 entries.
-
-### Stats
-
-Terms added, duplicates prevented and skips, as 14-day trend lines and a per-folder
-breakdown (Chart.js). Capped at 20000 events.
-
-### Settings
-
-Account detection, the clipboard watcher toggle, whether to close the sheet window after a
-push, full export, and **Erase all local data**.
-
----
-
-## How the writer works
-
-A push runs entirely in the service worker, [`background.js`](background.js), with the
-protocol primitives in [`sheets-driver.js`](sheets-driver.js).
-
-```
-1. fetchSnapshot()      download the sheet as .xlsx through the bound /u/{n}/ account
-2. XLSX.read()          parse it offline; pick the sheet matching the live tab's name
-3. windows.create()     open the live sheet, small and UNFOCUSED
-4. sheetsAttach()       chrome.debugger.attach + Emulation.setFocusEmulationEnabled
-5. sheetsWaitReady()    wait until the Name Box shows a selection
-6. clipboardSelfTest()  confirm the clipboard round-trips before trusting it
-   per entry:
-7.   similarity()       fuzzy duplicate check against the snapshot
-8.   findEmptyRow()     first row where every mapped column is blank
-   per cell:
-9.     sheetsGotoCell() write the ref into #t-name-box, press a real Enter
-10.    clipboardSet()   stage the value via the offscreen document
-11.    sheetsPaste()    Ctrl+V through Input.dispatchKeyEvent commands:["paste"]
-12.    verify (once)    Ctrl+C the cell back and compare
-13. sheetsDetach()      detach, optionally close the window
+```text
+      A         B          C          D       E      F         G          H
+ 1 |        Names (merged header)          |     |      Titles (merged)        |
+ 2 | Picture | Korean  | English  |  Info  |     | Korean | English  |  Info   |
+ 3 |         |         |          |        |     |        |          |         |  <- startRow
+ 4 |         |         |          |        |     |        |          |         |
+   ...
+      ^ Character Names -> B / C / D, start 3     ^ Titles -> F / G / H, start 3
 ```
 
-### Why an unfocused window
+Blank override fields inherit from the template and display the inherited value greyed, so a
+file only records what it genuinely changes.
 
-The push window is created with `focused: false` so it never steals your keyboard or mouse —
-you can keep working while it runs. A blurred renderer normally ignores synthetic input, so
-the driver enables `Emulation.setFocusEmulationEnabled`, which makes the page behave as if
-it were the active window.
-
-### Why Ctrl+V and not typing
-
-`Input.dispatchKeyEvent` with `commands: ["paste"]` invokes the renderer's own edit command.
-Sheets performs the paste through its normal handler, so the extension needs no knowledge of
-Sheets' internal markup — no hidden input to locate, no edit overlay to watch. Keystroke
-typing (`Input.insertText`, falling back to per-character `char` events) is kept as a
-secondary path.
-
-### Verification
-
-The **first** write of each push is read back off the grid with <kbd>Ctrl</kbd>+<kbd>C</kbd>
-and compared, then the remaining writes run unchecked for speed.
-
-* A value that returns **reformatted** (Sheets coercing a number or date) counts as success,
-  and the stored value is logged so you can fix column formatting.
-* A cell that returns **empty** means nothing landed. The push switches to keystroke typing,
-  retries that cell, and if that is also empty it reports
-  `Neither Ctrl+V nor typing put anything into C3`.
-* Because an unreadable clipboard would look identical to an empty cell, a round-trip
-  self-test runs first. If it fails, the log says so instead of guessing.
-
-The design rule throughout: **never report a write that cannot be observed.**
+> ⚠️ **The most common reason a push adds nothing:** a category with queued terms has no
+> columns mapped. Unmapped categories are skipped with `No mapping for "X"`. If most of your
+> terms are **Other Terms**, that category needs its own column group too.
 
 ---
 
-## Duplicate detection
+## 🖥 The Dashboard
 
-Each incoming term is compared against the existing values in the mapped source *and* target
-columns of the offline snapshot, using normalised Levenshtein similarity.
+Opened from the toolbar icon. Six views, dark and light themes.
 
-* Normalisation drops case, whitespace, quotes and punctuation.
-* Threshold: **0.88** (`DUP_THRESHOLD` in [`shared.js`](shared.js)).
-* A hit is logged as `Duplicate skipped: "x" ~ "y" (93%)` and counted in Stats.
-
-The comparison runs against the snapshot taken at the start of the push, plus everything
-written during it — so a batch containing the same term twice only writes it once.
-
----
-
-## Empty-row selection
-
-For each category, `findEmptyRow()` scans from `startRow` for the first row where **every**
-mapped column (source, target, notes) is blank, skipping rows already claimed earlier in the
-same push. If `endRow` is set and reached, the entry is skipped with
-`Range Full — <category> has no empty row before <endRow>`.
-
-This is what lets several categories share one sheet in side-by-side column groups, each
-with its own vertical range.
+| View | Contents |
+| :--- | :--- |
+| **▦ Workspace** | Nested folders and file tiles. A *file* is one live sheet plus its URL, bound account, template, overrides, logo and custom links. Right-click for open / edit / export / delete. |
+| **◧ Template Studio** | Column mappings, the colour-accurate preview, click-to-map, and template logos. |
+| **⌁ Queue** | Paste box, clipboard watcher toggle, the captured-terms table with per-row selection, and two push modes: **Workspace** (saved file) or **Speedrun** (URL + account + template, nothing saved). |
+| **☰ Activity log** | Every add, duplicate, skip and error with level filters. Capped at 2000 entries. |
+| **◔ Stats** | Terms added, duplicates prevented, skips — 14-day trends and per-folder bars. Capped at 20000 events. |
+| **⚙ Settings** | Account detection, clipboard watcher, close-window-after-push, full export, and erase all local data. |
 
 ---
 
-## Permissions
+## 🧮 Duplicate Detection
 
-| Permission | Why |
-| --- | --- |
-| `debugger` | The only way to deliver real keystrokes and edit commands to a canvas grid. Chrome shows a *"started debugging this browser"* banner while a push runs; this is unavoidable. |
-| `scripting` | Reads the Name Box and the active tab name from the Sheets page. |
+Every incoming term is compared against existing values in the mapped **source and target**
+columns of the offline snapshot.
+
+| Property | Value |
+| :--- | :--- |
+| Metric | Levenshtein distance, normalised by the longer string |
+| Threshold | **0.88** (`DUP_THRESHOLD` in [`shared.js`](shared.js)) |
+| Normalisation | Case, whitespace, quotes and punctuation removed |
+| Scope | The snapshot taken at push start, **plus** everything written during the push |
+| Log line | `Duplicate skipped: "x" ~ "y" (93%)` |
+
+---
+
+## 📐 Empty-Row Selection
+
+`findEmptyRow()` scans from `startRow` for the first row where **every** mapped column
+(source, target, notes) is blank, skipping rows already claimed earlier in the same push.
+
+- If `endRow` is set and reached, the entry is skipped with
+  `Range Full — <category> has no empty row before <endRow>`.
+- The scan extends a little past the snapshot's used range, so a sheet with room below its
+  last filled row still works.
+- Because "empty" means *all* mapped columns are blank, a row holding only a stray note is
+  not treated as free.
+
+---
+
+## 🔐 Permissions
+
+| Permission | Why it is needed |
+| :--- | :--- |
+| `debugger` | The only way to deliver real keystrokes and edit commands to a canvas grid. Chrome shows a **"started debugging this browser"** banner while a push runs — this is unavoidable and expected. |
+| `scripting` | Reads the Name Box and the active sheet tab name from the Sheets page. |
 | `offscreen` | Gives the service worker a DOM for clipboard access. |
 | `clipboardRead` | The clipboard watcher, and reading a cell back to verify a write. |
 | `clipboardWrite` | Staging a value before <kbd>Ctrl</kbd>+<kbd>V</kbd>. |
@@ -352,21 +589,21 @@ with its own vertical range.
 | `tabs` | Opening and tracking the push window. |
 | `alarms` | The 30-second clipboard poll. |
 | `contextMenus` | *Capture glossary selection* on right-click. |
-| `host_permissions` | `docs.google.com` and `accounts.google.com`, for snapshot downloads and account detection. |
+| `host_permissions` | `docs.google.com`, `accounts.google.com`, `*.googleusercontent.com` — snapshot downloads and account detection. |
 
 ---
 
-## Data, privacy and storage
+## 🛡 Data, Privacy and Storage
 
-Nothing is sent anywhere. The only network requests are to `docs.google.com`, to download
-your own sheet, using the cookies already in your browser. There is no analytics, no
-telemetry and no remote code — the bundled libraries ship inside the extension because MV3
-forbids loading scripts from a CDN.
+Nothing is sent anywhere. The only network requests go to `docs.google.com` to download
+**your own** sheet, using cookies already in your browser. No analytics, no telemetry, no
+remote code — the libraries are vendored because MV3 forbids CDN scripts.
 
-State lives in `chrome.storage.local` under these keys:
+State in `chrome.storage.local`:
 
 ```js
-templates  { id, name, logoBase64, targetPreviewUrl, mappings: { [category]: { sourceCol, targetCol, notesCol, startRow, endRow } } }
+templates  { id, name, logoBase64, targetPreviewUrl,
+             mappings: { [category]: { sourceCol, targetCol, notesCol, startRow, endRow } } }
 folders    { id, parentId, name, logoBase64 }
 files      { id, folderId, name, logoBase64, targetLiveUrl, boundAccountEmail,
              customLinks: [{ title, url }], templateId, overriddenMappings }
@@ -378,124 +615,153 @@ stats      { ts, type, fileId, folderId }     // capped at 20000
 settings   { theme, monitor, closeTabAfterFill }
 ```
 
-Logo images are downscaled to fit 512&nbsp;px and re-encoded as WebP before storage, so a
-large upload cannot bloat every state read and ZIP export. SVGs pass through untouched.
+`chrome.storage.session` holds only `lastClip` (clipboard de-duplication) and `pushing`
+(suppresses the watcher mid-push).
 
-**Account detection** works by fetching `docs.google.com/spreadsheets/u/{0..7}/` and reading
-the e-mail addresses out of the returned HTML. It never sees a password and never leaves
-Google's domain, but it is a heuristic — if it mislabels an account, the `/u/{n}/` index is
-what actually matters.
+**Logo handling.** Images are downscaled to fit 512 px and re-encoded as WebP before storage,
+so a large upload cannot bloat every state read and ZIP export. SVGs pass through untouched.
 
----
-
-## Export and import
-
-**Export** (per file, per folder, or everything) produces a `.zip`:
-
-```
-workspace_data.json     { version: 2, exportedAt, folders, templates, files }
-files/<id>.xlsx         the saved snapshot for each file and template
-```
-
-**Import** merges rather than overwrites. Existing templates and folders are left alone;
-a file that already exists gains any custom links and mappings it was missing, and local
-edits are never clobbered. Anything whose parent folder did not come along is re-homed to
-the workspace root instead of being orphaned.
+**Account detection** fetches `docs.google.com/spreadsheets/u/{0..7}/` and reads e-mail
+addresses out of the returned HTML. It never sees a password and never leaves Google's
+domain, but it *is* a heuristic — if a label looks wrong, the `/u/{n}/` index is what matters.
 
 ---
 
-## Project layout
+## 📦 Export and Import
 
-```
-manifest.json        MV3 manifest
-background.js        service worker: snapshots, account detection, row finding,
-                     clipboard plumbing, push orchestration
-sheets-driver.js     DevTools Protocol primitives: attach, readiness, cell navigation,
-                     Ctrl+V / Ctrl+C, keystroke typing
-shared.js            categories and aliases, schema defaults, the strict parser,
-                     Levenshtein, Google URL helpers, column helpers, mapping merge
-offscreen.js         clipboard read/write (the service worker has no DOM)
-offscreen.html       host page for the above
-dashboard.html       the full-page UI
-dashboard.js         UI controller: workspace, studio, queue, stats, settings, ZIP
-dashboard.css        glass/blur theme, light and dark
-lib/xlsx.full.min.js SheetJS — reads .xlsx with cell styles
-lib/jszip.min.js     ZIP export/import
-lib/chart.umd.min.js Chart.js — stats
-icon16/48/128.png    icons
+**Export** — per file, per folder, or everything — produces:
+
+```text
+<name>.zip
+├── workspace_data.json     { version: 2, exportedAt, folders, templates, files }
+└── files/
+    ├── <fileId>.xlsx       saved snapshot per file
+    └── <templateId>.xlsx   saved snapshot per template
 ```
 
-`shared.js` is loaded by both the service worker (`importScripts`) and the dashboard, so it
-must stay free of DOM access.
+**Import merges, it does not overwrite:**
+
+| Situation | Behaviour |
+| :--- | :--- |
+| Template with a matching id or name | Left untouched |
+| Folder with a matching id | Left untouched |
+| File with a matching id, or same folder + same sheet URL | Gains missing custom links and mappings; local edits win |
+| New file, folder or template | Added |
+| Snapshot missing locally | Restored from the ZIP |
+| Parent folder absent from the ZIP | Re-homed to the workspace root instead of orphaned |
 
 ---
 
-## Troubleshooting
+## 📂 Project Structure
 
-Check **Activity log** first. Messages are written to be diagnostic.
+```text
+smart-glossary-filler/
+├── manifest.json           # MV3 manifest — permissions, service worker, icons
+├── background.js           # Service worker: snapshots, account detection, row finding,
+│                           #   duplicate checks, clipboard plumbing, push orchestration
+├── sheets-driver.js        # DevTools Protocol: attach, readiness, cell navigation,
+│                           #   Ctrl+V / Ctrl+C edit commands, keystroke typing
+├── shared.js               # Categories + aliases, schema defaults, strict parser,
+│                           #   Levenshtein, Google URL helpers, column helpers,
+│                           #   template/override merge  (DOM-free — loaded by both sides)
+├── offscreen.js            # Clipboard read + write (the worker has no DOM)
+├── offscreen.html          # Host page for the above
+├── dashboard.html          # Full-page UI shell — six views
+├── dashboard.js            # UI controller: workspace, studio, queue, logs, stats,
+│                           #   settings, ZIP export/import, click-to-map
+├── dashboard.css           # Glassmorphic theme, dark + light, responsive grid
+├── lib/
+│   ├── xlsx.full.min.js    # SheetJS 0.20.3 — .xlsx parsing with cell styles
+│   ├── jszip.min.js        # JSZip 3.10.1 — ZIP export/import
+│   └── chart.umd.min.js    # Chart.js 4.4.1 — stats charts
+├── icon16.png              # Toolbar + extension icons
+├── icon48.png
+├── icon128.png
+└── README.md
+```
 
-| Message | What it means |
-| --- | --- |
-| `Unknown category "X"` | The label resolves to none of the 12. Add it to `CATEGORY_ALIASES` in `shared.js`, or relabel the line. |
+---
+
+## 🧰 Troubleshooting
+
+Check the **Activity log** first — messages are written to be diagnostic.
+
+### Capture problems
+
+| Message | Meaning and fix |
+| :--- | :--- |
+| `Unknown category "X"` | The label resolves to none of the 12. Relabel the line, or add the alias to `CATEGORY_ALIASES` in `shared.js`. |
 | `Source text MISSING (Target present)` | The missing-pair rule. Fix the line and re-paste. |
-| `No mapping for "X"` | That category has no columns in the template or file overrides. This is the most common reason a push adds nothing. |
-| `Range Full — X has no empty row before 250` | The category's `endRow` was reached. |
-| `Could not move to C3 (Sheets is on A1)` | Name Box navigation failed — usually a protected range or a different tab being active. |
-| `Ctrl+V left C3 empty — switching this push to keystrokes` | Paste was blocked; the keystroke fallback took over. Writes continue. |
-| `Neither Ctrl+V nor typing put anything into C3` | Both paths failed. Check that the sheet is editable by the bound account. |
-| `Clipboard read-back is unavailable` | Writes proceed but cannot be verified this run. |
-| `Could not control the sheet tab: no Sheets grid on that tab (it is showing "…")` | The tab is not a loaded spreadsheet — often a sign-in page. |
-| `Could not control the sheet tab: Google asked this account to sign in` | Sign in to that account, or pick a different one in Settings. |
+| `Malformed line — no valid Source → Target pair` | The line looks like an entry but has no parseable arrow pair. |
+| `No category for this entry` | An unlabelled line with no recognised heading above it. |
+
+### Push problems
+
+| Message | Meaning and fix |
+| :--- | :--- |
+| `No mapping for "X"` | That category has no columns in the template or overrides. **Most common cause of a push that adds nothing.** |
+| `Range Full — X has no empty row before 250` | The category's `endRow` was reached. Raise it or extend the sheet. |
+| `Could not move to C3 (Sheets is on A1)` | Name Box navigation failed — usually a protected range or the wrong tab being active. |
+| `Ctrl+V left C3 empty — switching this push to keystrokes` | Paste was blocked; the fallback took over. Writes continue. |
+| `Neither Ctrl+V nor typing put anything into C3` | Both paths failed. Confirm the bound account can edit the sheet. |
+| `Clipboard read-back is unavailable` | Writes proceed but are unverified this run. |
+| `Sheets stored "…" for "…"` | The value landed but was reformatted — check that column's number format. |
+| `no Sheets grid on that tab (it is showing "…")` | The tab is not a loaded spreadsheet, often a sign-in page. |
+| `Google asked this account to sign in` | Sign in to that account, or choose another in Settings. |
 | `Sheet download failed … direct: sign-in page` | The snapshot could not be fetched. Confirm the chosen `/u/{n}/` account can open the file. |
 
-**A push adds nothing and logs nothing.** The queue selection was empty, or no category in
-the batch has a mapping. Check the checkboxes in the queue table and the template mappings.
+### Other symptoms
 
-**The push window opens but the debugger banner does not appear.** Another debugger client
-is attached to that tab — close DevTools on it.
+| Symptom | Cause |
+| :--- | :--- |
+| Push does nothing, logs nothing | No terms ticked in the queue, or no mapped category in the batch. |
+| No debugger banner on the push window | Another debugger client is attached — close DevTools on that tab. |
+| Dashboard looks stale | It re-renders on storage changes; reload the tab if a push was interrupted. |
+| Service worker seems asleep | Normal for MV3. It wakes on messages and alarms; a push keeps it alive. |
 
 ---
 
-## Known limitations
+## 🚧 Known Limitations
 
-* **Google Sheets is being automated, not called.** There is no public API in use, so the
-  writer depends on observable page behaviour: the Name Box (`#t-name-box`) and the
-  renderer's paste command. If Google changes either, pushes fail with a specific message in
-  the Activity log rather than silently; the fix would be in `sheets-driver.js`.
-* **Speed.** Each cell costs a navigation plus a paste — roughly a second or two. A term
-  fills up to three cells, so a few hundred terms is a long run. Leave the dashboard open
-  while it works.
-* **Your clipboard is overwritten during a push,** since values are staged on it. Copy
-  anything you need beforehand. The clipboard watcher is paused automatically so it cannot
-  re-ingest the extension's own writes.
-* **The debugger banner** appears for the duration of every push. That is Chrome's required
-  disclosure for `chrome.debugger`.
-* **Chromium only.** `chrome.debugger` and offscreen documents have no Firefox or Safari
+- **Google Sheets is automated, not called.** No public API is in use, so the writer depends
+  on observable page behaviour: the Name Box (`#t-name-box`) and the renderer's paste
+  command. If Google changes either, pushes fail with a specific message in the Activity log
+  rather than silently — the fix lives in `sheets-driver.js`.
+- **Speed.** Each cell costs a navigation plus a paste, roughly a second or two. A term fills
+  up to three cells, so several hundred terms is a long run. Leave the dashboard open.
+- **Your clipboard is overwritten during a push,** since values are staged on it. Copy
+  anything you need beforehand. The watcher is paused automatically so it cannot re-ingest
+  the extension's own writes.
+- **The debugger banner** appears for every push. That is Chrome's required disclosure for
+  `chrome.debugger`.
+- **Chromium only.** `chrome.debugger` and offscreen documents have no Firefox or Safari
   equivalent.
-* **Multi-tab workbooks:** the sheet to analyse is chosen by matching the live tab's name,
-  because an `.xlsx` export carries no `gid`. A workbook with two identically named tabs
-  falls back to the first.
-* **Values are pasted, not escaped.** A term beginning with `=` or `+` becomes a formula,
+- **Multi-tab workbooks** are matched by the live tab's name, because an `.xlsx` export
+  carries no `gid`. Two identically named tabs fall back to the first.
+- **Values are pasted, not escaped.** A term beginning with `=` or `+` becomes a formula,
   exactly as it would if you typed it.
+- **No automated test suite yet.** Syntax checks and a standalone parser harness only — see
+  below.
 
 ---
 
-## Development
+## 🛠 Development
 
-No build step, no dependencies to install — it is plain ES2020 loaded directly by Chrome.
+No build step and no dependencies to install — plain ES2020 loaded directly by Chrome.
+
+### Syntax check before reloading
 
 ```bash
-# syntax-check everything before reloading
 for f in background.js shared.js sheets-driver.js dashboard.js offscreen.js; do node --check "$f"; done
 ```
 
 ```powershell
-# PowerShell
 foreach ($f in 'background.js','shared.js','sheets-driver.js','dashboard.js','offscreen.js') { node --check $f }
 ```
 
-The parser is pure and has no Chrome dependencies beyond `uid()`, which makes it easy to
-exercise in isolation:
+### Exercise the parser standalone
+
+`shared.js` is DOM-free, so the parser runs under plain Node:
 
 ```js
 const fs = require("fs");
@@ -506,23 +772,46 @@ global.chrome = { storage: { local: { get: async () => ({}), set: async () => {}
 `);
 ```
 
-Debugging tips:
+Evaluate the source and the test together in one scope — `const` declarations from a separate
+indirect `eval` are not visible to the module scope.
 
-* **Service worker logs:** `chrome://extensions` → *Service worker* link on the extension's
-  card. Note that MV3 workers are killed when idle; a push keeps it alive.
-* **Dashboard logs:** F12 on the dashboard tab.
-* **Verifying Sheets selectors**, if a push starts failing after a Google UI change — run
-  this in the console of a sheet tab:
+### Where to look when debugging
 
-  ```js
-  JSON.stringify({
-    nameBox:    !!document.querySelector('#t-name-box'),
-    cell:         document.querySelector('#t-name-box')?.value,
-    formulaBar: !!document.querySelector('#t-formula-bar-input'),
-    cellInput:  !!document.querySelector('.cell-input'),
-    activeTab:    document.querySelector('.docs-sheet-active-tab')?.textContent?.trim()
-  })
-  ```
+| Target | How |
+| :--- | :--- |
+| Service worker console | `chrome://extensions` → **Service worker** link on the card |
+| Dashboard console | F12 on the dashboard tab |
+| Protocol traffic | DevTools on the push window — but note that attaching blocks the extension's own debugger |
 
-  `nameBox` and `cell` must be present for navigation to work. The others only affect
-  write verification and sheet-name matching, and degrade gracefully.
+### Verifying Sheets selectors after a Google UI change
+
+Run this in the console of a sheet tab:
+
+```js
+JSON.stringify({
+  nameBox:    !!document.querySelector('#t-name-box'),
+  cell:         document.querySelector('#t-name-box')?.value,
+  formulaBar: !!document.querySelector('#t-formula-bar-input'),
+  cellInput:  !!document.querySelector('.cell-input'),
+  activeTab:    document.querySelector('.docs-sheet-active-tab')?.textContent?.trim()
+})
+```
+
+`nameBox` and `cell` **must** be present for navigation to work. The rest only affect write
+verification and sheet-name matching, and degrade gracefully.
+
+### Conventions
+
+- `shared.js` must never touch the DOM — the service worker imports it.
+- `background.js` decides **what** to write; `sheets-driver.js` decides **how**. Keep protocol
+  calls out of the orchestration layer.
+- Never report a write that cannot be observed.
+- Bump `version` in `manifest.json` with behaviour changes, so a reload is visible.
+
+---
+
+## 📄 License
+
+No license has been chosen yet. Until one is added, default copyright applies and others
+cannot legally reuse this code. Add a `LICENSE` file — MIT is the usual choice for a tool
+like this — before publishing if you want contributions.
