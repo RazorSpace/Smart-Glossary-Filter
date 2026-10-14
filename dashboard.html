@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <title>Glossary Workspace</title>
+  <link rel="stylesheet" href="dashboard.css" />
+  <!-- MV3 blocks remote code, so these "CDN" libraries ship inside the extension -->
+  <script src="lib/xlsx.full.min.js"></script>
+  <script src="lib/jszip.min.js"></script>
+  <script src="lib/chart.umd.min.js"></script>
+  <script src="shared.js"></script>
+</head>
+<body>
+  <div class="backdrop"></div>
+
+  <!-- ===================== PERSISTENT LEFT SIDEBAR ===================== -->
+  <aside class="sidebar glass">
+    <div class="brand"><img src="icon48.png" alt="" /><span>Glossary</span></div>
+    <nav class="side-nav">
+      <button class="nav active" data-view="workspace"><i>▦</i> Workspace</button>
+      <button class="nav" data-view="studio"><i>◧</i> Template Studio</button>
+      <button class="nav" data-view="queue"><i>⌁</i> Queue <b id="queueCount" class="pill">0</b></button>
+      <button class="nav" data-view="logs"><i>☰</i> Activity log</button>
+      <button class="nav" data-view="stats"><i>◔</i> Stats</button>
+      <button class="nav" data-view="settings"><i>⚙</i> Settings</button>
+    </nav>
+    <div class="side-foot">
+      <button class="icon-btn" id="themeToggle" title="Light / dark">◐</button>
+      <span class="muted" id="acctHint">No account bound</span>
+    </div>
+  </aside>
+
+  <!-- ===================== MAIN CONTENT ===================== -->
+  <main class="main">
+
+    <!-- WORKSPACE -->
+    <section id="view-workspace" class="view active">
+      <header class="page-head">
+        <div class="crumbs" id="crumbs"></div>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="newFolderBtn">New folder</button>
+        <button class="btn ghost" id="newFileBtn">New file</button>
+        <button class="btn ghost" id="importZipBtn">Import .zip</button>
+        <input type="file" id="importZipInput" accept=".zip" hidden />
+      </header>
+      <div class="grid" id="grid"></div>
+    </section>
+
+    <!-- TEMPLATE STUDIO -->
+    <section id="view-studio" class="view">
+      <header class="page-head"><h1>Template Studio</h1><div class="spacer"></div>
+        <button class="btn primary" id="newTemplateBtn">New template</button></header>
+      <div class="grid" id="templateGrid"></div>
+    </section>
+
+    <!-- QUEUE -->
+    <section id="view-queue" class="view">
+      <header class="page-head"><h1>Queue</h1><div class="spacer"></div>
+        <label class="switch"><input type="checkbox" id="monitorToggle" /><span></span> Watch clipboard</label></header>
+
+      <div class="panel glass">
+        <h2>Paste captured text</h2>
+        <p class="muted">Format <code>* Category: - [KR] "Source" → "Target (Notes)"</code>. An entry missing either side is skipped and logged.</p>
+        <textarea id="pasteBox" rows="4" placeholder='* Character Names: - [KR] "김철수" → "Kim Cheolsu (protagonist)"'></textarea>
+        <div class="row"><button class="btn primary" id="parseBtn">Add to queue</button><span id="parseResult" class="muted"></span></div>
+      </div>
+
+      <div class="panel glass">
+        <div class="row"><h2>Push target</h2><div class="spacer"></div>
+          <div class="seg"><button class="on" data-mode="workspace">Workspace</button><button data-mode="speedrun">Speedrun</button></div>
+        </div>
+        <div id="modeWorkspace" class="mode">
+          <div class="field"><label>Saved file</label><select id="pushFile"></select></div>
+        </div>
+        <div id="modeSpeedrun" class="mode" hidden>
+          <div class="three">
+            <div class="field"><label>Target sheet URL</label><input type="url" id="srUrl" placeholder="https://docs.google.com/spreadsheets/d/..."></div>
+            <div class="field"><label>Google account</label><select id="srAcct"></select></div>
+            <div class="field"><label>Template</label><select id="srTemplate"></select></div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" id="pushBtn">Push selected terms</button>
+          <button class="btn ghost" id="clearQueueBtn">Clear queue</button>
+          <span class="muted" id="pushHint"></span>
+        </div>
+      </div>
+
+      <div class="panel glass">
+        <h2>Captured terms</h2>
+        <div class="table-wrap"><table class="data" id="queueTable"></table></div>
+      </div>
+
+</section>
+
+    <!-- ACTIVITY LOG -->
+    <section id="view-logs" class="view">
+      <header class="page-head"><h1>Activity log</h1></header>
+      <div class="panel glass">
+        <div class="row"><h2>Everything the extension did</h2><div class="spacer"></div>
+          <select id="logFilter"><option value="">All</option><option value="ok">Added</option><option value="dup">Duplicates</option><option value="skip">Skipped</option><option value="error">Errors</option></select>
+          <button class="btn ghost" id="clearLogsBtn">Clear</button></div>
+        <ul class="logs" id="logList"></ul>
+      </div>
+        </section>
+
+    <!-- STATS -->
+    <section id="view-stats" class="view">
+      <header class="page-head"><h1>Stats</h1></header>
+      <div class="kpis">
+        <div class="kpi glass"><span>Terms added</span><b id="kAdded">0</b></div>
+        <div class="kpi glass"><span>Duplicates prevented</span><b id="kDup">0</b></div>
+        <div class="kpi glass"><span>Skipped</span><b id="kSkip">0</b></div>
+      </div>
+      <div class="charts">
+        <div class="panel glass"><h2>Activity by date</h2><canvas id="chartDate"></canvas></div>
+        <div class="panel glass"><h2>Activity by folder</h2><canvas id="chartFolder"></canvas></div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view">
+      <header class="page-head"><h1>Settings</h1></header>
+      <div class="panel glass" style="max-width:720px">
+        <div class="field"><label>Google accounts detected in this browser</label>
+          <div class="row"><select id="setAcct" style="flex:1"></select><button class="btn ghost" id="detectBtn">Detect accounts</button></div></div>
+        <label class="switch block"><input type="checkbox" id="setMonitor"><span></span> Watch the clipboard for glossary text</label>
+        <label class="switch block"><input type="checkbox" id="setClose"><span></span> Close the sheet tab after a push finishes</label>
+        <div class="row" style="margin-top:18px">
+          <button class="btn ghost" id="exportAllBtn">Export everything (.zip)</button>
+          <button class="btn danger" id="wipeBtn">Erase all local data</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Right-click menu -->
+  <div id="ctxMenu" class="ctx glass" hidden></div>
+
+  <!-- Full-page modal -->
+  <div id="modal" class="modal" hidden><div class="modal-card glass" id="modalCard"></div></div>
+
+  <div id="toast" class="toast"></div>
+  <script src="dashboard.js"></script>
+</body>
+</html>
