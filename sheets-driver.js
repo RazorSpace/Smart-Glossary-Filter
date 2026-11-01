@@ -106,6 +106,24 @@ const sheetsActiveTabName = (tabId) => inPage(tabId, () => {
   return name?.textContent?.trim() || null;
 });
 
+async function sheetsSelectTab(tabId, wanted) {
+  if (!wanted) return sheetsActiveTabName(tabId);
+  if (await sheetsActiveTabName(tabId).catch(() => null) === wanted) return wanted;
+  const selected = await inPage(tabId, (name) => {
+    const tabs = [...document.querySelectorAll(".docs-sheet-tab")];
+    const tab = tabs.find(el => (el.querySelector(".docs-sheet-tab-name")?.textContent || el.textContent || "").trim() === name);
+    if (!tab) return false;
+    tab.click(); return true;
+  }, [wanted]);
+  if (!selected) throw new Error(`Could not find sheet tab "${wanted}" in the live spreadsheet`);
+  for (let i = 0; i < 30; i++) {
+    const active = await sheetsActiveTabName(tabId).catch(() => null);
+    if (active === wanted) return active;
+    await sleep(100);
+  }
+  throw new Error(`Could not activate sheet tab "${wanted}"`);
+}
+
 /* While a cell is being edited, Sheets mirrors the text into the cell overlay
    and into the formula bar. Either one proves our keystrokes landed. */
 const sheetsEditorText = (tabId) => inPage(tabId, () => ({

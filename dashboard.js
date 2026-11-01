@@ -8,6 +8,8 @@ let S = null;
 let currentFolder = null;     // null = workspace root
 let pushMode = "workspace";
 let ctxTarget = null;
+let speedrunTemplateId = "";
+let workspaceFileId = "";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -26,6 +28,7 @@ function toast(msg) {
 /* ---------- Boot ---------- */
 (async function init() {
   S = await loadState();
+  await upgradeQueuedGender();
   document.documentElement.dataset.theme = S.settings.theme;
   syncSettingsUI();
   renderAll();
@@ -35,6 +38,22 @@ function toast(msg) {
     if ($("#modal").hidden) renderAll(); else { renderQueue(); renderLogs(); }
   });
 })();
+async function upgradeQueuedGender() {
+  let changed = false;
+  for (const q of S.queue) {
+    if (q.category !== "Character Names") {
+      if (q.gender) { q.gender = ""; changed = true; }
+      continue;
+    }
+    if (q.gender || !q.raw) continue;
+    let parsed = parseGlossaryText(q.raw).valid[0];
+    if (!parsed) parsed = parseGlossaryText(`${q.category}: ${q.raw}`).valid[0];
+    if (parsed?.gender) {
+      q.target = parsed.target; q.notes = parsed.notes; q.gender = parsed.gender; changed = true;
+    }
+  }
+  if (changed) await saveState({ queue: S.queue });
+}
 function renderAll() { renderWorkspace(); renderTemplates(); renderQueue(); renderLogs(); renderStats(); renderAccountPickers(); }
 
 /* ---------- Navigation ---------- */
@@ -61,10 +80,12 @@ function folderPath(id) {
 function renderWorkspace() {
   const cr = $("#crumbs"); cr.innerHTML = "";
   const root = document.createElement("button"); root.textContent = "Workspace";
+  wireFolderDrop(root, null);
   root.onclick = () => { currentFolder = null; renderWorkspace(); }; cr.appendChild(root);
   for (const f of folderPath(currentFolder)) {
     cr.insertAdjacentHTML("beforeend", "<span>›</span>");
     const b = document.createElement("button"); b.textContent = f.name;
+    wireFolderDrop(b, f.id);
     b.onclick = () => { currentFolder = f.id; renderWorkspace(); }; cr.appendChild(b);
   }
 
@@ -79,11 +100,13 @@ function renderWorkspace() {
       onOpen: () => { currentFolder = f.id; renderWorkspace(); },
       onCtx: (x, y) => showCtx(x, y, [
         ["Open", () => { currentFolder = f.id; renderWorkspace(); }],
+        ["Move", () => moveItem("folder", f.id)],
         ["Rename / logo", () => folderEditor(f.id)],
         ["Export to ZIP", () => exportZip({ folderId: f.id })],
         ["Delete", () => removeFolder(f.id), true]
       ])
     }));
+    wireTileMove(grid.lastElementChild, "folder", f.id);
   }
   for (const f of files) {
     const tpl = S.templates.find(t => t.id === f.templateId);
@@ -96,12 +119,19 @@ function renderWorkspace() {
       onCtx: (x, y) => showCtx(x, y, [
         ["Open sheet in browser", () => send({ type: "OPEN_URL", url: f.targetLiveUrl, email: f.boundAccountEmail })],
         ["Edit file", () => fileEditor(f.id)],
+        ["Move", () => moveItem("file", f.id)],
         ["Export to ZIP", () => exportZip({ fileId: f.id })],
         ["Delete", () => removeFile(f.id), true]
       ])
     }));
+    wireTileMove(grid.lastElementChild, "file", f.id);
   }
   if (!folders.length && !files.length) grid.insertAdjacentHTML("beforeend", `<div class="empty">Nothing here yet — create a folder or a file.</div>`);
+  grid.ondragover = e => { if (e.dataTransfer.types.includes("text/glossary-item")) e.preventDefault(); };
+  grid.ondrop = e => {
+    e.preventDefault();
+    try { const d = JSON.parse(e.dataTransfer.getData("text/glossary-item")); if (d.source !== currentFolder) setItemFolder(d.kind, d.id, currentFolder); } catch {}
+  };
 }
 function tile({ logo, name, meta, badge, links = [], onOpen, onCtx }) {
   const el = document.createElement("div");
@@ -115,6 +145,34 @@ function tile({ logo, name, meta, badge, links = [], onOpen, onCtx }) {
   el.onclick = (e) => { if (e.target.tagName !== "A") onOpen(); };
   el.oncontextmenu = (e) => { e.preventDefault(); onCtx(e.clientX, e.clientY); };
   return el;
+}
+function wireTileMove(el, kind, id) {
+  el.draggable = true;
+  el.ondragstart = e => e.dataTransfer.setData("text/glossary-item", JSON.stringify({ kind, id, source: currentFolder }));
+  if (kind !== "folder") return;
+  wireFolderDrop(el, id);
+}
+function wireFolderDrop(el, folderId) {
+  el.ondragover = e => { if (e.dataTransfer.types.includes("text/glossary-item")) { e.preventDefault(); el.classList.add("drop-target"); } };
+  el.ondragleave = () => el.classList.remove("drop-target");
+  el.ondrop = e => {
+    e.preventDefault(); e.stopPropagation(); el.classList.remove("drop-target");
+    try { const d = JSON.parse(e.dataTransfer.getData("text/glossary-item")); if (d.kind !== "folder" || d.id !== folderId) setItemFolder(d.kind, d.id, folderId); } catch {}
+  };
+}
+function moveItem(kind, id) {
+  const choices = [{ id: null, name: "Workspace (root)" }, ...S.folders.filter(x => !(kind === "folder" && (x.id === id || folderPath(x.id).some(p => p.id === id))))];
+  const menu = choices.map((x, i) => `${i + 1}. ${x.id == null ? x.name : folderPath(x.id).map(p => p.name).join(" / ")}`).join("\n");
+  const answer = prompt(`Move to folder (enter number):\n${menu}`);
+  if (answer == null) return;
+  const chosen = choices[parseInt(answer, 10) - 1];
+  if (chosen) setItemFolder(kind, id, chosen.id);
+}
+async function setItemFolder(kind, id, folderId) {
+  if (kind === "folder" && folderId && (folderId === id || folderPath(folderId).some(p => p.id === id))) return toast("A folder cannot be moved inside itself");
+  if (kind === "folder") S.folders.find(x => x.id === id).parentId = folderId;
+  else S.files.find(x => x.id === id).folderId = folderId;
+  await saveState({ folders: S.folders, files: S.files }); renderAll(); toast("Item moved");
 }
 $("#newFolderBtn").onclick = () => folderEditor(null);
 $("#newFileBtn").onclick = () => fileEditor(null);
@@ -227,6 +285,7 @@ function renderTemplates() {
       onOpen: () => templateEditor(t.id),
       onCtx: (x, y) => showCtx(x, y, [
         ["Edit", () => templateEditor(t.id)],
+        ["Export to ZIP", () => exportZip({ templateId: t.id })],
         ["Duplicate", async () => { S.templates.push({ ...structuredClone(t), id: uid(), name: t.name + " copy" }); await saveState({ templates: S.templates }); renderTemplates(); }],
         ["Delete", async () => { if (!confirm("Delete template?")) return; S.templates = S.templates.filter(x => x.id !== t.id); await saveState({ templates: S.templates }); renderTemplates(); }, true]
       ])
@@ -240,7 +299,7 @@ function renderTemplates() {
 }
 $("#newTemplateBtn").onclick = () => templateEditor(null);
 
-/* The 12 × 5 mapping grid; `base` shows inherited template values as placeholders. */
+/* The 12-category mapping grid; `base` shows inherited values as placeholders. */
 function mappingGridHtml(mappings, base = null) {
   const head = `<div class="map-head"><span>Category</span>${MAP_FIELDS.map(f => `<span>${f.label}</span>`).join("")}</div>`;
   const rows = CATEGORIES.map(c => {
@@ -248,8 +307,10 @@ function mappingGridHtml(mappings, base = null) {
     return `<div class="map-row"><label title="${esc(c)}">${esc(c)}</label>` + MAP_FIELDS.map(f => {
       const val = m[f.key] ?? "";
       const ph = b[f.key] != null && b[f.key] !== "" ? String(b[f.key]) : (f.optional ? "—" : "");
+      if (f.kind === "sheet") return `<select data-cat="${esc(c)}" data-k="${f.key}" data-sheet-map data-map-value="${esc(val)}"><option value="" disabled>Choose sheet…</option></select>`;
+      const genderDisabled = f.key === "genderCol" && c !== "Character Names";
       return `<input type="${f.kind === "row" ? "number" : "text"}" data-cat="${esc(c)}" data-k="${f.key}"
-        value="${esc(val)}" placeholder="${esc(ph)}" ${f.kind === "col" ? 'maxlength="3"' : 'min="1"'}>`;
+        value="${esc(val)}" placeholder="${esc(ph)}" ${genderDisabled ? "disabled" : ""} ${f.kind === "col" ? 'maxlength="3"' : 'min="1"'}>`;
     }).join("") + `</div>`;
   }).join("");
   return head + rows;
@@ -257,8 +318,9 @@ function mappingGridHtml(mappings, base = null) {
 function collectMappings(root = document) {
   const out = {};
   $$("[data-cat]", root).forEach(i => {
+    if (i.dataset.k === "genderCol" && i.dataset.cat !== "Character Names") return;
     const v = i.value.trim(); if (!v) return;
-    (out[i.dataset.cat] ||= {})[i.dataset.k] = i.dataset.k.endsWith("Col") ? v.toUpperCase() : parseInt(v, 10);
+    (out[i.dataset.cat] ||= {})[i.dataset.k] = i.dataset.k.endsWith("Col") ? v.toUpperCase() : (i.dataset.k === "sheetName" ? v : parseInt(v, 10));
   });
   return out;
 }
@@ -318,7 +380,7 @@ function templateEditor(id) {
 /* ---------- Click-to-map arming (Module 2.5) ---------- */
 let armedInput = null;
 function armMappingInputs() {
-  $$("[data-cat]").forEach(i => i.onfocus = () => {
+  $$("[data-cat]").filter(i => i.dataset.k !== "sheetName").forEach(i => i.onfocus = () => {
     $$("[data-cat]").forEach(x => x.classList.remove("armed"));
     i.classList.add("armed"); armedInput = i;
     const f = MAP_FIELDS.find(f => f.key === i.dataset.k);
@@ -348,26 +410,60 @@ function renderXlsx(snapshot, host, tabsEl, getMappings) {
     tabsEl.appendChild(b);
   });
   previewCtx = { wb, host, getMappings, sheetName: wb.SheetNames[0] };
-  drawSheet(wb.SheetNames[0]);
+  $$('[data-sheet-map]').forEach(sel => {
+    const current = sel.value || sel.dataset.mapValue;
+    sel.innerHTML = wb.SheetNames.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    const selected = wb.SheetNames.includes(current) ? current : wb.SheetNames[0];
+    if (selected) { sel.value = selected; sel.dataset.mapValue = selected; sel.title = selected; }
+    sel.onchange = () => { sel.dataset.mapValue = sel.value; sel.title = sel.value; };
+  });
+  if (wb.SheetNames.length) drawSheet(wb.SheetNames[0]);
+  else host.innerHTML = `<div class="empty">This workbook has no visible sheets.</div>`;
 
   function drawSheet(name) {
+    if (!wb.Sheets[name]) return;
     previewCtx.sheetName = name;
     const sheet = wb.Sheets[name];
     const ref = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]) : { s: { r: 0, c: 0 }, e: { r: 30, c: 10 } };
-    const rows = Math.min(ref.e.r + 1, 400), cols = Math.min(Math.max(ref.e.c + 1, 8), 60);
-    let html = `<table><tr><th class="rn"></th>`;
+    const rows = Math.max(1, Math.min(ref.e.r + 1, 1500));
+    const cols = Math.max(1, Math.min(ref.e.c + 1, 160));
+    const colWidth = c => {
+      const dim = sheet["!cols"]?.[c];
+      return Math.max(32, Math.min(600, dim?.wpx || (dim?.wch ? dim.wch * 7.2 + 5 : 96)));
+    };
+    const rowHeight = r => {
+      const dim = sheet["!rows"]?.[r];
+      return Math.max(18, Math.min(400, dim?.hpx || (dim?.hpt ? dim.hpt * 96 / 72 : 24)));
+    };
+    const mergeAt = new Map(), covered = new Set();
+    for (const m of sheet["!merges"] || []) {
+      if (m.s.r >= rows || m.s.c >= cols) continue;
+      const range = { s: m.s, e: { r: Math.min(m.e.r, rows - 1), c: Math.min(m.e.c, cols - 1) } };
+      mergeAt.set(`${m.s.r},${m.s.c}`, range);
+      for (let r = m.s.r; r <= range.e.r; r++) for (let c = m.s.c; c <= range.e.c; c++) {
+        if (r !== m.s.r || c !== m.s.c) covered.add(`${r},${c}`);
+      }
+    }
+    let html = `<table><colgroup><col style="width:48px">`;
+    for (let c = 0; c < cols; c++) html += `<col style="width:${colWidth(c)}px">`;
+    html += `</colgroup><thead><tr><th class="rn"></th>`;
     for (let c = 0; c < cols; c++) html += `<th data-col="${indexToCol(c)}">${indexToCol(c)}</th>`;
-    html += `</tr>`;
+    html += `</tr></thead><tbody>`;
     for (let r = 0; r < rows; r++) {
-      html += `<tr><td class="rn" data-row="${r + 1}">${r + 1}</td>`;
+      html += `<tr style="height:${rowHeight(r)}px"><td class="rn" data-row="${r + 1}">${r + 1}</td>`;
       for (let c = 0; c < cols; c++) {
+        if (covered.has(`${r},${c}`)) continue;
         const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+        const merge = mergeAt.get(`${r},${c}`);
+        const colspan = merge ? merge.e.c - merge.s.c + 1 : 1;
+        const rowspan = merge ? merge.e.r - merge.s.r + 1 : 1;
         const style = cellStyle(cell);
-        html += `<td class="pick" data-col="${indexToCol(c)}" data-row="${r + 1}"${style}>${esc(cell?.w ?? cell?.v ?? "")}</td>`;
+        const value = esc(cell?.w ?? cell?.v ?? "");
+        html += `<td class="pick" data-col="${indexToCol(c)}" data-row="${r + 1}"${colspan > 1 ? ` colspan="${colspan}"` : ""}${rowspan > 1 ? ` rowspan="${rowspan}"` : ""}${value ? ` title="${value}"` : ""}${style}>${value}</td>`;
       }
       html += `</tr>`;
     }
-    host.innerHTML = html + `</table>`;
+    host.innerHTML = html + `</tbody></table>`;
     $$("td.pick, th[data-col], td.rn", host).forEach(td => td.onclick = () => applyCellPick(td.dataset.col || "", td.dataset.row || ""));
     highlightMapped();
   }
@@ -381,7 +477,11 @@ function cellStyle(cell) {
   if (s.font?.color?.rgb) bits.push(`color:#${String(s.font.color.rgb).slice(-6)}`);
   if (s.font?.bold) bits.push("font-weight:700");
   if (s.font?.italic) bits.push("font-style:italic");
-  if (s.alignment?.horizontal) bits.push(`text-align:${s.alignment.horizontal}`);
+  if (s.alignment?.horizontal) {
+    const align = s.alignment.horizontal === "centerContinuous" ? "center" : s.alignment.horizontal;
+    if (["left", "center", "right", "justify"].includes(align)) bits.push(`text-align:${align}`);
+  }
+  if (["top", "center", "bottom"].includes(s.alignment?.vertical)) bits.push(`vertical-align:${s.alignment.vertical}`);
   return bits.length ? ` style="${bits.join(";")}"` : "";
 }
 /* Outline every cell that a mapping currently points at. */
@@ -390,7 +490,8 @@ function highlightMapped() {
   const maps = previewCtx.getMappings?.() || {};
   const wanted = new Set();
   for (const m of Object.values(maps)) {
-    for (const col of [m.sourceCol, m.targetCol, m.notesCol]) {
+    if (m.sheetName ? m.sheetName !== previewCtx.sheetName : previewCtx.sheetName !== previewCtx.wb.SheetNames[0]) continue;
+    for (const col of [m.sourceCol, m.targetCol, m.notesCol, m.genderCol]) {
       if (!col) continue;
       if (m.startRow) wanted.add(`${col}|${m.startRow}`);
       if (m.endRow) wanted.add(`${col}|${m.endRow}`);
@@ -511,12 +612,17 @@ function renderAccountPickers() {
 function renderQueue() {
   $("#queueCount").textContent = S.queue.length;
   $("#monitorToggle").checked = !!S.settings.monitor;
-  $("#pushFile").innerHTML = S.files.length
-    ? S.files.map(f => `<option value="${f.id}">${esc(folderPath(f.folderId).map(x => x.name).join(" / ") || "Workspace")} / ${esc(f.name)}</option>`).join("")
-    : `<option value="">No files saved yet</option>`;
+  $("#pushFile").innerHTML = `<option value="">${S.files.length ? "Choose a glossary file…" : "No files saved yet"}</option>` +
+    S.files.map(f => `<option value="${f.id}">${esc(folderPath(f.folderId).map(x => x.name).join(" / ") || "Workspace")} / ${esc(f.name)}</option>`).join("");
+  if (!S.files.some(f => f.id === workspaceFileId)) workspaceFileId = "";
+  $("#pushFile").value = workspaceFileId;
+  $("#pushFile").onchange = e => { workspaceFileId = e.target.value; };
   $("#srTemplate").innerHTML = S.templates.length
-    ? S.templates.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("")
+    ? S.templates.map(t => `<option value="${t.id}" ${t.id === speedrunTemplateId ? "selected" : ""}>${esc(t.name)}</option>`).join("")
     : `<option value="">No templates yet</option>`;
+  if (!S.templates.some(t => t.id === speedrunTemplateId)) speedrunTemplateId = S.templates[0]?.id || "";
+  $("#srTemplate").value = speedrunTemplateId;
+  $("#srTemplate").onchange = e => { speedrunTemplateId = e.target.value; };
 
   const t = $("#queueTable");
   if (!S.queue.length) { t.innerHTML = `<tr><td class="empty">Queue is empty. Copy or paste glossary text.</td></tr>`; return; }
@@ -544,8 +650,9 @@ $("#parseBtn").onclick = async () => {
   const text = $("#pasteBox").value; if (!text.trim()) return;
   const r = await send({ type: "PARSE_TEXT", text, source: "manual paste" });
   S = await loadState(); renderQueue(); renderLogs();
-  $("#parseResult").textContent = `Added ${r.added ?? 0}, skipped ${r.skipped ?? 0}.`;
+  $("#parseResult").textContent = `Added ${r.added ?? 0}, skipped ${r.skipped ?? 0}. Choose a glossary, then push selected terms.`;
   $("#pasteBox").value = "";
+  if (r.added) (pushMode === "workspace" ? $("#pushFile") : $("#srUrl")).focus();
 };
 $("#clearQueueBtn").onclick = async () => { S.queue = []; await saveState({ queue: [] }); renderQueue(); };
 
@@ -553,16 +660,18 @@ $("#pushBtn").onclick = async (e) => {
   const ids = $$(".qsel:checked").map(c => c.dataset.id);
   if (!ids.length) return toast("Select at least one term");
   const entries = S.queue.filter(q => ids.includes(q.id));
+  const isSpeedrun = pushMode === "speedrun";
   let job;
-  if (pushMode === "workspace") {
+  if (!isSpeedrun) {
     const file = S.files.find(f => f.id === $("#pushFile").value);
-    if (!file) return toast("Create and pick a file first");
+    if (!file) return toast("Choose the glossary file you want to use first");
     const tpl = S.templates.find(t => t.id === file.templateId);
     job = { url: file.targetLiveUrl, accountEmail: file.boundAccountEmail, label: file.name,
             mappings: effectiveMappings(tpl, file.overriddenMappings), meta: { fileId: file.id, folderId: file.folderId } };
   } else {
     const url = $("#srUrl").value.trim();
-    const tpl = S.templates.find(t => t.id === $("#srTemplate").value);
+    speedrunTemplateId = $("#srTemplate").value;
+    const tpl = S.templates.find(t => t.id === speedrunTemplateId);
     if (!url) return toast("Paste the target sheet URL");
     if (!tpl) return toast("Pick a template");
     job = { url, accountEmail: $("#srAcct").value, label: "Speedrun", mappings: effectiveMappings(tpl, {}), meta: {} };
@@ -574,10 +683,16 @@ $("#pushBtn").onclick = async (e) => {
   const r = await send({ type: "RUN_PUSH", job, entries });
   e.target.disabled = false; e.target.textContent = "Push selected terms";
   $("#pushHint").textContent = "";
-  S = await loadState(); renderAll();
+  S = await loadState();
+  if (isSpeedrun) speedrunTemplateId = S.templates[0]?.id || "";
+  renderAll();
   if (!r?.ok) return toast(r?.error || "Push failed");
   const n = (s) => r.results.filter(x => x.status === s).length;
-  toast(`Added ${n("added")} · ${n("duplicate")} duplicate · ${n("skipped")} skipped`);
+  const errors = n("error");
+  const firstError = r.results.find(x => x.status === "error")?.reason;
+  toast(errors
+    ? `Added ${n("added")} · ${errors} error(s) left queued${firstError ? `: ${firstError}` : ""}`
+    : `Added ${n("added")} · ${n("duplicate")} duplicate · ${n("skipped")} skipped`);
 };
 
 /* ---------- Logs ---------- */
@@ -651,36 +766,54 @@ $("#exportAllBtn").onclick = () => exportZip({ all: true });
  * ===================================================================== */
 async function exportZip(scope) {
   const zip = new JSZip();
-  let folders = [], files = [], name = "glossary_workspace";
+  let folders = [], files = [], templates = [], name = "glossary_workspace";
 
-  if (scope.all) { folders = S.folders; files = S.files; }
+  if (scope.all) { folders = S.folders; files = S.files; templates = S.templates; }
   else if (scope.folderId) {
     const ids = new Set([scope.folderId]);
     let grew = true;
     while (grew) { grew = false; for (const f of S.folders) if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) { ids.add(f.id); grew = true; } }
     folders = S.folders.filter(f => ids.has(f.id));
     files = S.files.filter(f => ids.has(f.folderId));
-    name = S.folders.find(f => f.id === scope.folderId).name;
+    name = S.folders.find(f => f.id === scope.folderId)?.name || "folder";
+    templates = S.templates.filter(t => files.some(f => f.templateId === t.id));
+  } else if (scope.templateId) {
+    const template = S.templates.find(t => t.id === scope.templateId);
+    if (!template) return toast("Template not found");
+    templates = [template]; name = template.name;
   } else {
     const file = S.files.find(f => f.id === scope.fileId);
+    if (!file) return toast("File not found");
     files = [file]; folders = folderPath(file.folderId); name = file.name;
+    templates = S.templates.filter(t => t.id === file.templateId);
   }
-
-  const usedTemplates = S.templates.filter(t => files.some(f => f.templateId === t.id));
+  const safe = value => String(value || "item").replace(/[<>:"\/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/g, "") || "item";
+  const folderNames = id => folderPath(id).map(x => safe(x.name));
+  const putDefinition = (kind, item, path) => {
+    const data = { ...item };
+    delete data.logoBase64;
+    const assetPath = path ? `${path}/` : "";
+    const logoAsset = item.logoBase64 ? `assets/${kind}/${assetPath}${safe(item.name)}.${imageExt(item.logoBase64)}` : null;
+    data.logoAsset = logoAsset;
+    zip.file(`${kind}/${path ? path + "/" : ""}${safe(item.name)}.json`, JSON.stringify(data, null, 2));
+    if (logoAsset) zip.file(logoAsset, imageBytes(item.logoBase64), { base64: true });
+    return data;
+  };
+  const imageExt = data => /^data:image\/([a-zA-Z0-9.+-]+)/.exec(data)?.[1]?.replace("svg+xml", "svg").replace("jpeg", "jpg") || "png";
+  const imageBytes = data => String(data).split(",").pop();
+  const manifestFolders = folders.map(f => putDefinition("folders", f, folderNames(f.parentId).concat(safe(f.name)).join("/")));
+  const manifestTemplates = templates.map(t => putDefinition("templates", t, ""));
+  const manifestFiles = files.map(f => putDefinition("files", f, folderNames(f.folderId).concat(safe(f.name)).join("/")));
   const payload = {
-    version: 2, exportedAt: Date.now(),
-    folders, templates: usedTemplates,
-    files: files.map(f => ({ ...f, snapshotFile: S.snapshots[f.id] ? `files/${f.id}.xlsx` : null }))
+    version: 3, exportedAt: Date.now(), folders: manifestFolders, templates: manifestTemplates, files: manifestFiles,
+    settings: S.settings
   };
   zip.file("workspace_data.json", JSON.stringify(payload, null, 2));
-  const dir = zip.folder("files");
-  for (const f of files) if (S.snapshots[f.id]) dir.file(`${f.id}.xlsx`, S.snapshots[f.id].b64, { base64: true });
-  for (const t of usedTemplates) if (S.snapshots[t.id]) dir.file(`${t.id}.xlsx`, S.snapshots[t.id].b64, { base64: true });
 
   const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `${String(name).replace(/[^\w\-]+/g, "_")}.zip`;
+  a.download = `${safe(name)}.zip`;
   a.click(); URL.revokeObjectURL(a.href);
   toast("Exported");
 }
@@ -692,17 +825,30 @@ $("#importZipInput").onchange = async (e) => {
     const zip = await JSZip.loadAsync(await file.arrayBuffer());
     const meta = JSON.parse(await zip.file("workspace_data.json").async("string"));
     let nf = 0, nfi = 0, nt = 0;
+    const restoreLogo = async item => {
+      if (item.logoAsset && zip.file(item.logoAsset)) {
+        const b64 = await zip.file(item.logoAsset).async("base64");
+        const ext = item.logoAsset.split(".").pop().toLowerCase();
+        const mime = ext === "svg" ? "image/svg+xml" : `image/${ext === "jpg" ? "jpeg" : ext}`;
+        item.logoBase64 = `data:${mime};base64,${b64}`;
+      }
+      delete item.logoAsset;
+      return item;
+    };
 
-    for (const t of meta.templates || []) {
+    for (const raw of meta.templates || []) {
+      const t = await restoreLogo({ ...raw });
       if (S.templates.some(x => x.id === t.id || x.name === t.name)) continue;
       S.templates.push(t); nt++;
       if (zip.file(`files/${t.id}.xlsx`)) S.snapshots[t.id] = { b64: await zip.file(`files/${t.id}.xlsx`).async("base64"), fetchedAt: Date.now(), size: 0, ext: "xlsx" };
     }
-    for (const fo of meta.folders || []) {
+    for (const raw of meta.folders || []) {
+      const fo = await restoreLogo({ ...raw });
       if (S.folders.some(x => x.id === fo.id)) continue;
       S.folders.push(fo); nf++;
     }
-    for (const fi of meta.files || []) {
+    for (const raw of meta.files || []) {
+      const fi = await restoreLogo({ ...raw });
       const dup = S.files.find(x => x.id === fi.id || (x.folderId === fi.folderId && x.targetLiveUrl === fi.targetLiveUrl));
       if (dup) {
         // merge: fill gaps only, never clobber local edits
@@ -718,7 +864,8 @@ $("#importZipInput").onchange = async (e) => {
     const fids = new Set(S.folders.map(f => f.id));
     for (const fo of S.folders) if (fo.parentId && !fids.has(fo.parentId)) fo.parentId = null;
     for (const fi of S.files) if (fi.folderId && !fids.has(fi.folderId)) fi.folderId = null;
-    await saveState({ folders: S.folders, files: S.files, templates: S.templates, snapshots: S.snapshots });
+    if (meta.settings) S.settings = { ...S.settings, ...meta.settings };
+    await saveState({ folders: S.folders, files: S.files, templates: S.templates, snapshots: S.snapshots, ...(meta.settings ? { settings: S.settings } : {}) });
     renderAll(); toast(`Imported ${nf} folder(s), ${nfi} file(s), ${nt} template(s)`);
   } catch (err) { toast("Import failed: " + err.message); }
 };

@@ -11,20 +11,22 @@ const CATEGORIES = [
   "Item Names", "System/Cultivation Levels", "Sound Effects (SFX)", "Other Terms"
 ];
 
-/* The 5 split inputs per category (Module 2.4). */
+/* The 7 mapping inputs per category. */
 const MAP_FIELDS = [
   { key: "sourceCol", label: "Source col", kind: "col" },
   { key: "targetCol", label: "Target col", kind: "col" },
+  { key: "genderCol", label: "Gender col", kind: "col" },
   { key: "notesCol",  label: "Notes col",  kind: "col" },
+  { key: "sheetName", label: "Sheet tab", kind: "sheet" },
   { key: "startRow",  label: "Start row",  kind: "row" },
   { key: "endRow",    label: "End row",    kind: "row", optional: true }
 ];
 
 /* ---------- Data schema (Module 1) ----------
- * templates: { id, name, logoBase64, targetPreviewUrl, mappings: { [cat]: {sourceCol,targetCol,notesCol,startRow,endRow} } }
+ * templates: { id, name, logoBase64, targetPreviewUrl, mappings: { [cat]: {sourceCol,targetCol,notesCol,genderCol,sheetName,startRow,endRow} } }
  * folders:   { id, parentId, name, logoBase64 }
  * files:     { id, folderId, name, logoBase64, targetLiveUrl, boundAccountEmail, customLinks:[{title,url}], templateId, overriddenMappings:{} }
- * queue:     { id, category, source, target, notes, timestamp, lang, raw }
+ * queue:     { id, category, source, target, notes, gender, timestamp, lang, raw }
  * snapshots: { [templateId|fileId]: { b64, fetchedAt, size } }   (offline .xlsx)
  * accounts:  [{ index, email }]  (last detection result)
  */
@@ -98,10 +100,20 @@ function parseGlossaryText(text) {
     const category = m[1] ? normalizeCategory(m[1]) : currentCategory;
     const lang = m[2].toUpperCase().replace(/\s/g, "");
     const source = unquote(m[3]);
-    let target = unquote(m[4]), notes = "";
-    // Notes = LAST trailing (...) or [...] chunk of the target.
-    const nm = target.match(/^([\s\S]*?)\s*[\(\[]([^\)\]]*)[\)\]]\s*$/);
-    if (nm) { target = nm[1].trim(); notes = nm[2].trim(); }
+    let target = unquote(m[4]), notes = "", gender = "";
+    // Notes = LAST trailing (...) or [...] chunk; bracket notes may contain parentheses.
+    const nm = target.match(/^([\s\S]*?)\s*\[([^\]]*)\]\s*$/)
+      || target.match(/^([\s\S]*?)\s*\(([^()]*)\)\s*$/);
+    if (nm && category === "Character Names" && /^[MF]$/i.test(nm[2].trim())) {
+      target = nm[1].trim(); gender = nm[2].trim().toUpperCase();
+    } else if (nm && !/^[MF]$/i.test(nm[2].trim())) {
+      target = nm[1].trim(); notes = nm[2].trim().replace(/^notes?\s*:\s*/i, "");
+    }
+    // Character gender is encoded after the translated name, before an optional note.
+    if (!gender && category === "Character Names") {
+      const gm = target.match(/\s*\(([MF])\)\s*$/i);
+      if (gm) { gender = gm[1].toUpperCase(); target = target.slice(0, gm.index).trim(); }
+    }
     target = target.replace(/^["“”']|["“”']$/g, "").trim();
 
     if (!source && !target) { skipped.push({ raw: original, reason: "Source and Target both missing" }); continue; }
@@ -110,7 +122,7 @@ function parseGlossaryText(text) {
     if (!category) { skipped.push({ raw: original, reason: "No category for this entry" }); continue; }
     if (!CATEGORIES.includes(category)) { skipped.push({ raw: original, reason: `Unknown category "${category}"` }); continue; }
 
-    valid.push({ id: uid(), category, source, target, notes, lang, raw: original, timestamp: Date.now() });
+    valid.push({ id: uid(), category, source, target, notes, gender, lang, raw: original, timestamp: Date.now() });
   }
   return { valid, skipped };
 }
@@ -227,7 +239,9 @@ function accountUrl(url, index, range) {
 function exportUrl(url, index) {
   const p = parseGoogleUrl(url);
   if (!p) return null;
-  if (p.kind === "spreadsheets") return `https://docs.google.com/spreadsheets/u/${index ?? 0}/d/${p.id}/export?format=xlsx${p.gid ? `&gid=${p.gid}` : ""}`;
+  // Export the whole workbook; gid is used to choose the live starting tab,
+  // while mappings can independently target any tab in the workbook.
+  if (p.kind === "spreadsheets") return `https://docs.google.com/spreadsheets/u/${index ?? 0}/d/${p.id}/export?format=xlsx`;
   return `https://docs.google.com/document/u/${index ?? 0}/d/${p.id}/export?format=docx`;
 }
 
@@ -249,6 +263,7 @@ function effectiveMappings(template, overrides) {
   const out = {};
   for (const c of CATEGORIES) {
     const merged = { ...(template?.mappings?.[c] || {}), ...(overrides?.[c] || {}) };
+    if (c !== "Character Names") delete merged.genderCol;
     for (const k of Object.keys(merged)) if (merged[k] === "" || merged[k] == null) delete merged[k];
     if (Object.keys(merged).length) out[c] = merged;
   }

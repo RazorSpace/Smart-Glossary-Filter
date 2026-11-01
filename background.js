@@ -63,7 +63,7 @@ async function fetchSnapshot({ url, accountIndex, email }) {
   const p = parseGoogleUrl(String(url || "").trim());
   if (!p) throw new Error("That link isn't a Google Sheets or Docs link (it should contain /d/<id>).");
   const fmtx = p.kind === "spreadsheets" ? "xlsx" : "docx";
-  const gid = p.gid ? `&gid=${p.gid}` : "";
+  const gid = p.kind === "spreadsheets" ? "" : (p.gid ? `&gid=${p.gid}` : "");
   const tried = [];
 
   /* ---- Strategy 1: direct download from the service worker ---- */
@@ -94,7 +94,8 @@ async function fetchSnapshot({ url, accountIndex, email }) {
       const [{ result } = {}] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         world: "MAIN",
-        args: [p.id, p.gid, idx],
+        // Keep the complete workbook so mappings can safely target any tab.
+        args: [p.id, null, idx],
         func: async (id, gid, idx) => {
           const toB64 = (buf) => { const b = new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
           const errs = [];
@@ -155,7 +156,7 @@ function waitTabComplete(tabId, timeout) {
  * Returns { row } or { full: true } when endRow is exceeded.
  * ===================================================================== */
 function findEmptyRow(sheet, map, taken = new Set()) {
-  const cols = [map.sourceCol, map.targetCol, map.notesCol].filter(Boolean).map(colToIndex).filter(i => i >= 0);
+  const cols = [map.sourceCol, map.targetCol, map.notesCol, map.genderCol].filter(Boolean).map(colToIndex).filter(i => i >= 0);
   if (!cols.length) return { error: "No columns mapped" };
   const start = Math.max(1, parseInt(map.startRow, 10) || 1);
   const end = map.endRow ? parseInt(map.endRow, 10) : null;
@@ -167,7 +168,7 @@ function findEmptyRow(sheet, map, taken = new Set()) {
     if (taken.has(r)) continue;
     const blank = cols.every(c => {
       const cell = sheet?.[XLSX.utils.encode_cell({ r: r - 1, c })];
-      return !cell || String(cell.w ?? cell.v ?? "").trim() === "";
+      return !cell || (!cell.f && String(cell.w ?? cell.v ?? "").trim() === "");
     });
     if (blank) return { row: r };
   }
@@ -212,8 +213,22 @@ async function clipboardGet() {
 /* Copy the selected cell and read it — the only way to see inside a canvas
    grid that doesn't depend on Sheets' private class names. */
 async function readSelectedCell(tabId) {
+  // Replace the staged glossary text before copying. If Sheets ignores Ctrl+C,
+  // the sentinel lets us detect that instead of mistaking stale clipboard data
+  // for a successful write/read-back.
+  const marker = `gf-copy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  if (!await clipboardSet(marker)) return null;
   await sheetsCopy(tabId);
-  return (await clipboardGet()).replace(/\r/g, "").replace(/\n+$/, "");
+  const copied = await clipboardGet();
+  if (copied === marker) return null;
+  return copied.replace(/\r/g, "").replace(/\n+$/, "");
+}
+async function readLiveCell(tabId, cell) {
+  const at = await sheetsGotoCell(tabId, cell);
+  if (at !== cell) return { ok: false, reason: `Could not inspect ${cell} (Sheets is on ${at || "?"})` };
+  const value = await readSelectedCell(tabId).catch(() => null);
+  if (value == null) return { ok: false, reason: `Could not read ${cell} from the live sheet` };
+  return { ok: true, value };
 }
 
 /* Does the clipboard round-trip inside the extension at all? Without this,
@@ -246,29 +261,26 @@ async function writeCell(tabId, cell, value, state) {
   let moved = await go();
   if (moved) return { ok: false, reason: moved };
   await put();
-  if (state.proven) return { ok: true };
-
-  /* First write of the push: read it back off the grid. A value that comes
-     back reformatted (Sheets coercing a number or date) still proves the
-     write path works — only an EMPTY cell means nothing landed. */
+  /* Verify each cell. A non-empty read-back alone is not proof: it may be
+     the old value from a cell where paste failed. */
   moved = await go();
-  const back = moved ? "" : await readSelectedCell(tabId).catch(() => "");
-  if (back.trim()) {
+  const back = moved ? null : await readSelectedCell(tabId).catch(() => null);
+  if (back != null && sameText(back, text)) {
     state.proven = true;
-    if (!sameText(back, text)) await addLog("info", `Sheets stored "${back.slice(0, 40)}" for "${text.slice(0, 40)}" — check that column's formatting if that looks wrong.`);
     return { ok: true };
   }
 
   if (state.mode === "paste") {
-    await addLog("info", `Ctrl+V left ${cell} empty — switching this push to keystrokes.`);
+    await addLog("info", `Could not verify the value in ${cell} after Ctrl+V — retrying with keystrokes.`);
     state.mode = "type";
     if (await go()) return { ok: false, reason: `Could not return to ${cell}` };
     await sheetsTypeValue(tabId, text);
     if (await go()) return { ok: false, reason: `Could not return to ${cell}` };
-    if ((await readSelectedCell(tabId).catch(() => "")).trim()) { state.proven = true; return { ok: true }; }
-    return { ok: false, reason: `Neither Ctrl+V nor typing put anything into ${cell}` };
+    const typed = await readSelectedCell(tabId).catch(() => null);
+    if (typed != null && sameText(typed, text)) { state.proven = true; return { ok: true }; }
+    return { ok: false, reason: typed == null ? `Could not read back ${cell}; the write was not verified` : `The value in ${cell} did not match the glossary term after typing` };
   }
-  return { ok: false, reason: `Typing put nothing into ${cell}` };
+  return { ok: false, reason: back == null ? `Could not read back ${cell}; the write was not verified` : `The value in ${cell} did not match the glossary term after typing` };
 }
 
 /* =====================================================================
@@ -309,8 +321,6 @@ async function runPush(job, entries) {
   const liveName = await sheetsActiveTabName(tab.id).catch(() => null);
   if (liveName && wb.Sheets[liveName]) sheetName = liveName;
   else if (liveName && liveName !== sheetName) await addLog("info", `Live tab "${liveName}" isn't in the downloaded copy — reading "${sheetName}" instead.`);
-  const sheet = wb.Sheets[sheetName];
-
   const results = [];
   const takenByCat = {};
   const byCat = {};
@@ -320,13 +330,24 @@ async function runPush(job, entries) {
   const probe = await clipboardSelfTest();
   const writeState = { mode: probe.canPaste ? "paste" : "type", proven: !probe.canVerify };
   if (!probe.canPaste) await addLog("info", "Clipboard staging is unavailable — typing values with keystrokes instead of Ctrl+V.");
-  else if (!probe.canVerify) await addLog("info", "Clipboard read-back is unavailable — writes will not be verified this run.");
+  else if (!probe.canVerify) await addLog("error", "Clipboard read-back is unavailable — live row checks will stop before writing to prevent unverified changes.");
   for (const e of entries) (byCat[e.category] ||= []).push(e);
 
   for (const [category, list] of Object.entries(byCat)) {
     const map = job.mappings?.[category];
     if (!map?.sourceCol && !map?.targetCol) {
       list.forEach(e => results.push({ id: e.id, source: e.source, status: "skipped", reason: `No mapping for "${category}"` }));
+      continue;
+    }
+    const categorySheetName = map.sheetName || sheetName;
+    const sheet = wb.Sheets[categorySheetName];
+    if (!sheet) {
+      list.forEach(e => results.push({ id: e.id, source: e.source, status: "skipped", reason: `Sheet tab "${categorySheetName}" is not in the workbook snapshot` }));
+      continue;
+    }
+    try { await sheetsSelectTab(tab.id, categorySheetName); }
+    catch (err) {
+      list.forEach(e => results.push({ id: e.id, source: e.source, status: "skipped", reason: err.message }));
       continue;
     }
     const taken = (takenByCat[category] ||= new Set());
@@ -343,17 +364,54 @@ async function runPush(job, entries) {
         continue;
       }
 
-      // --- boundary-aware empty row ---
-      const spot = findEmptyRow(sheet, map, taken);
-      if (spot.full) { results.push({ id: e.id, source: e.source, status: "skipped", reason: `Range Full — ${category} has no empty row before ${map.endRow}` }); continue; }
-      if (spot.error) { results.push({ id: e.id, source: e.source, status: "skipped", reason: spot.error }); continue; }
-      const row = spot.row;
-      taken.add(row);
+      // Find a row that is empty both in the downloaded snapshot and on the
+      // live grid. A stale export must never make us overwrite an occupied row.
+      let row = null, rowError = null, liveDuplicate = null;
+      const mappedCols = [...new Set([map.sourceCol, map.targetCol, map.genderCol, map.notesCol].filter(Boolean))];
+      for (let attempt = 0; attempt < 1000; attempt++) {
+        const spot = findEmptyRow(sheet, map, taken);
+        if (spot.full) { rowError = `Range Full — ${category} has no empty row before ${map.endRow}`; break; }
+        if (spot.error) { rowError = spot.error; break; }
+        const candidate = spot.row;
+        taken.add(candidate);
+        let occupied = false;
+        for (const col of mappedCols) {
+          const cell = `${String(col).toUpperCase()}${candidate}`;
+          let live;
+          try { live = await readLiveCell(tab.id, cell); }
+          catch (err) { rowError = `Could not inspect ${cell}: ${err.message}`; break; }
+          if (!live.ok) { rowError = live.reason; break; }
+          if (live.value.trim()) {
+            sheet[XLSX.utils.encode_cell({ r: candidate - 1, c: colToIndex(col) })] = { t: "s", v: live.value };
+            if (col === map.sourceCol) existingSrc.push({ row: candidate, value: live.value });
+            if (col === map.targetCol) existingTgt.push({ row: candidate, value: live.value });
+            if (col === map.sourceCol || col === map.targetCol) {
+              const score = Math.max(similarity(e.source, live.value), similarity(e.target, live.value));
+              if (score >= DUP_THRESHOLD) liveDuplicate = { value: live.value, score };
+            }
+            occupied = true;
+            break;
+          }
+        }
+        if (liveDuplicate) break;
+        if (rowError) break;
+        if (!occupied) { row = candidate; break; }
+      }
+      if (liveDuplicate) {
+        results.push({ id: e.id, source: e.source, status: "duplicate", match: liveDuplicate.value, score: liveDuplicate.score });
+        continue;
+      }
+      if (row == null) {
+        const reason = rowError || "Could not find a verified empty row in the live sheet";
+        results.push({ id: e.id, source: e.source, status: /inspect|read/i.test(reason) ? "error" : "skipped", reason });
+        continue;
+      }
 
       // --- navigate to each mapped cell and dispatch a paste ---
       const writes = [
         [map.sourceCol, e.source],
         [map.targetCol, e.target],
+        [map.genderCol, e.gender],
         [map.notesCol, e.notes]
       ].filter(([c, v]) => c && v);
 
@@ -369,12 +427,12 @@ async function runPush(job, entries) {
         } catch (err) { note = `Writing ${cell} failed: ${err.message}`; }
       }
 
-      if (wrote) {
+      if (wrote && !note) {
         existingSrc.push({ row, value: e.source });
         existingTgt.push({ row, value: e.target });
         results.push({ id: e.id, source: e.source, target: e.target, status: "added", cell: `${String(map.sourceCol || map.targetCol).toUpperCase()}${row}` });
       } else {
-        results.push({ id: e.id, source: e.source, status: "skipped", reason: note || "Paste was not accepted" });
+        results.push({ id: e.id, source: e.source, status: "error", reason: note || "Paste was not verified" });
       }
     }
   }
@@ -383,12 +441,14 @@ async function runPush(job, entries) {
   await new Promise(r => setTimeout(r, 2500)); // let Sheets save the edits
   await sheetsDetach(tab.id);
   await chrome.storage.session.remove("pushing");
-  if (settings.closeTabAfterFill) chrome.windows.remove(win.id).catch(() => {});
+  const hasSkipped = results.some(r => r.status !== "added" && r.status !== "duplicate");
+  if (settings.closeTabAfterFill && !hasSkipped) chrome.windows.remove(win.id).catch(() => {});
 
   // Log + stats + drop processed entries from the queue.
   for (const r of results) {
     if (r.status === "added") { await addLog("ok", `Added "${r.source}" → "${r.target}" at ${r.cell} (${job.label})`, job.meta); await addStat("added", job.meta); }
     else if (r.status === "duplicate") { await addLog("dup", `Duplicate skipped: "${r.source}" ~ "${r.match}" (${Math.round(r.score * 100)}%)`, job.meta); await addStat("duplicate", job.meta); }
+    else if (r.status === "error") { await addLog("error", `Could not safely push "${r.source}": ${r.reason} (${job.label})`, job.meta); await addStat("error", job.meta); }
     else { await addLog("skip", `Skipped "${r.source}": ${r.reason}`, job.meta); await addStat("skipped", job.meta); }
   }
   const done = new Set(results.filter(r => r.status !== "error").map(r => r.id));
