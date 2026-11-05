@@ -62,22 +62,25 @@ h1 { font-size: 24px; margin: 0; }
 .crumbs span { color: var(--muted); }
 
 /* ---------- Speed-dial grid ---------- */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 22px; }
-.tile { position: relative; aspect-ratio: 1 / .88; border-radius: 22px; cursor: pointer; overflow: hidden; user-select: none;
-  display: flex; flex-direction: column; justify-content: flex-end; padding: 15px;
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 22px; align-items: stretch; }
+.tile { position: relative; min-width: 0; min-height: 180px; border-radius: 22px; cursor: pointer; overflow: hidden; user-select: none;
+  display: grid; grid-template-rows: 22px 78px auto; align-content: stretch; gap: 6px; padding: 12px;
   transition: transform .25s cubic-bezier(.2,.8,.2,1), border-color .25s, box-shadow .25s; }
 .tile:hover { transform: translateY(-5px) scale(1.015); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
-.tile .logo { position: absolute; inset: 0 0 42px; display: grid; place-items: center; font-size: 50px; font-weight: 700; color: var(--accent); opacity: .92; }
-.tile .logo img { width: 48%; height: 48%; object-fit: contain; border-radius: 14px; }
-.tile .name { position: relative; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile .meta { position: relative; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile .badge { position: absolute; top: 11px; right: 11px; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+.tile-top { display: flex; justify-content: flex-end; align-items: center; min-width: 0; }
+.tile .logo { position: relative; inset: auto; display: grid; place-items: center; width: 100%; height: 78px; min-height: 78px;
+  overflow: hidden; font-size: 40px; line-height: 1; font-weight: 700; color: var(--accent); opacity: .92; }
+.tile .logo img { display: block; width: auto; height: auto; max-width: 72%; max-height: 78px; object-fit: contain; border-radius: 8px; }
+.tile-copy { min-width: 0; display: flex; flex-direction: column; align-self: stretch; gap: 3px; }
+.tile .name { min-width: 0; font-weight: 650; line-height: 1.3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.tile .meta { min-width: 0; color: var(--muted); font-size: 12.5px; line-height: 1.35; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.tile .badge { max-width: 100%; font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: var(--glass-strong); color: var(--muted); border: 1px solid var(--line); }
-.tile .links { position: relative; display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.tile .links { display: flex; gap: 6px; flex-wrap: wrap; align-content: flex-start; max-height: 58px; overflow: auto; margin-top: 5px; }
 .tile .links a { font-size: 11.5px; padding: 3px 9px; border-radius: 9px; background: var(--glass-strong); border: 1px solid var(--line);
   color: var(--text); text-decoration: none; }
 .tile .links a:hover { border-color: var(--accent); color: var(--accent); }
-.tile.add { border-style: dashed; background: transparent; box-shadow: none; align-items: center; justify-content: center; color: var(--muted); }
+.tile.add { aspect-ratio: 1 / .88; min-height: 200px; display: flex; align-items: center; justify-content: center; border-style: dashed; background: transparent; box-shadow: none; color: var(--muted); }
 .tile.add .plus { font-size: 44px; line-height: 1; }
 .empty { padding: 44px; text-align: center; color: var(--muted); grid-column: 1/-1; }
 
@@ -167,6 +170,7 @@ table.data th { position: sticky; top: 0; background: var(--glass-strong); backd
 .map-head, .map-row { display: grid; grid-template-columns: 132px repeat(4, minmax(48px, .62fr)) minmax(145px, 1.25fr) repeat(2, minmax(58px, .72fr)); gap: 6px; align-items: center; }
 .map-head { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; text-align: center; }
 .map-head span:first-child { text-align: left; }
+.mapping-help { color: var(--muted); font-size: 12px; line-height: 1.4; margin: 5px 0 8px; }
 .map-row { margin-bottom: 6px; }
 .map-row > label { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .map-row input { padding: 7px 8px; text-align: center; text-transform: uppercase; border-radius: 9px; }

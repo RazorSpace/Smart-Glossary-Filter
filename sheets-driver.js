@@ -98,29 +98,57 @@ async function sheetsWaitReady(tabId, timeout = 45000) {
 const sheetsNameBox = (tabId) =>
   inPage(tabId, () => (document.querySelector("#t-name-box")?.value || "").trim().toUpperCase());
 
-/* Name of the tab currently open at the bottom of the grid — the .xlsx copy
-   has no gid, so this is how we know which sheet we are really typing into. */
+/* Name/ID of the tab currently open in Sheets. */
 const sheetsActiveTabName = (tabId) => inPage(tabId, () => {
-  const tab = document.querySelector(".docs-sheet-active-tab");
+  const tab = document.querySelector(".docs-sheet-active-tab, .docs-sheet-tab[aria-selected='true'], .docs-sheet-tab[aria-current='true']");
   const name = tab?.querySelector(".docs-sheet-tab-name") || tab;
   return name?.textContent?.trim() || null;
 });
+const sheetsActiveTabId = (tabId) => inPage(tabId, () => {
+  return new URLSearchParams(location.hash.replace(/^#/, "")).get("gid");
+});
 
-async function sheetsSelectTab(tabId, wanted) {
+async function sheetsSelectTab(tabId, wanted, sheetId = null) {
   if (!wanted) return sheetsActiveTabName(tabId);
   if (await sheetsActiveTabName(tabId).catch(() => null) === wanted) return wanted;
-  const selected = await inPage(tabId, (name) => {
-    const tabs = [...document.querySelectorAll(".docs-sheet-tab")];
-    const tab = tabs.find(el => (el.querySelector(".docs-sheet-tab-name")?.textContent || el.textContent || "").trim() === name);
-    if (!tab) return false;
-    tab.click(); return true;
+
+  // Google Sheets uses gid in the URL as the active tab identifier. Route by
+  // that first, then send a real pointer click to the matching visible tab so
+  // the grid and URL stay in sync even when the app ignores a hash-only change.
+  if (sheetId != null) {
+    await inPage(tabId, (id) => {
+      const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+      params.set("gid", String(id));
+      params.delete("range");
+      location.hash = params.toString();
+      return true;
+    }, [sheetId]).catch(() => false);
+  }
+
+  const point = await inPage(tabId, (name) => {
+    const tabs = [...document.querySelectorAll(".docs-sheet-tab, [role='tab']")];
+    const tab = tabs.find(el => {
+      const label = el.querySelector(".docs-sheet-tab-name")?.textContent || el.getAttribute("aria-label") || el.textContent || "";
+      return label.trim() === name;
+    });
+    if (!tab) return null;
+    tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const rect = tab.getBoundingClientRect();
+    return rect.width && rect.height ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
   }, [wanted]);
-  if (!selected) throw new Error(`Could not find sheet tab "${wanted}" in the live spreadsheet`);
-  for (let i = 0; i < 30; i++) {
-    const active = await sheetsActiveTabName(tabId).catch(() => null);
-    if (active === wanted) return active;
+  if (point) {
+    await dbgSend(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
+    await dbgSend(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
+  }
+  for (let i = 0; i < 40; i++) {
+    const [active, activeId] = await Promise.all([
+      sheetsActiveTabName(tabId).catch(() => null),
+      sheetsActiveTabId(tabId).catch(() => null)
+    ]);
+    if (active === wanted || (sheetId != null && String(activeId) === String(sheetId))) return wanted;
     await sleep(100);
   }
+
   throw new Error(`Could not activate sheet tab "${wanted}"`);
 }
 
@@ -185,24 +213,22 @@ async function sheetsGotoCell(tabId, cell) {
  * takes. Sheets then does the paste itself, so we depend on none of its
  * internal markup: no hidden input to find, no edit overlay to watch.
  * ===================================================================== */
-async function sheetsEditCommand(tabId, command) {
-  const spec = command === "paste" ? { key: "v", code: "KeyV", vk: 86 } : { key: "c", code: "KeyC", vk: 67 };
+async function sheetsEditCommand(tabId) {
+  const spec = { key: "v", code: "KeyV", vk: 86 };
   const base = {
     key: spec.key, code: spec.code, windowsVirtualKeyCode: spec.vk,
     nativeVirtualKeyCode: spec.vk, modifiers: 2 /* Ctrl */
   };
-  try { await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, commands: [command] }); }
+  try { await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, commands: ["paste"] }); }
   catch { await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "rawKeyDown", ...base }); }
   await dbgSend(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
   await sleep(200);
 }
-const sheetsPaste = (tabId) => sheetsEditCommand(tabId, "paste");
-const sheetsCopy = (tabId) => sheetsEditCommand(tabId, "copy");
+const sheetsPaste = (tabId) => sheetsEditCommand(tabId);
 
 /* =====================================================================
  * Keystroke fallback: type one value into the selected cell and commit it.
- * Never throws on a failed edit — the caller reads the cell back off the
- * grid to decide whether anything actually landed.
+ * Used only when clipboard staging is unavailable.
  * ===================================================================== */
 async function sheetsTypeValue(tabId, value) {
   // Tabs and newlines would spill the value into neighbouring cells.

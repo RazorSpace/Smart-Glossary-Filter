@@ -1,4 +1,4 @@
-# 📘 Smart Glossary Filler
+# 📘 Smart Glossary Filler v1.1
 
 <p align="center">
   <img src="icon128.png" width="130" height="130" alt="Smart Glossary Filler Logo">
@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/SheetJS-0.20.3-brightgreen?style=flat" alt="SheetJS">
   <img src="https://img.shields.io/badge/Chart.js-4.4.1-FF6384?style=flat&logo=chartdotjs&logoColor=white" alt="Chart.js">
   <br>
-  <img src="https://img.shields.io/badge/version-1.4.0-blue?style=flat" alt="Version 1.4.0">
+  <img src="https://img.shields.io/badge/version-1.1.0-blue?style=flat" alt="Version 1.1.0">
   <img src="https://img.shields.io/badge/build-none%20required-success?style=flat" alt="No build step">
   <img src="https://img.shields.io/badge/data-100%25%20local-success?style=flat" alt="100% local">
   <img src="https://img.shields.io/badge/API%20keys-zero-informational?style=flat" alt="Zero API keys">
@@ -28,6 +28,8 @@ driving the real page — a Name Box jump and a true <kbd>Ctrl</kbd>+<kbd>V</kbd
 
 There is no server, no OAuth app, no API key and no telemetry. Sheets are read through the
 Google session already in your browser, and written the way a person would write them.
+
+For the changes in version 1.1, see [UPDATES_v1.1.md](UPDATES_v1.1.md).
 
 ---
 
@@ -99,31 +101,37 @@ So this extension splits the problem in two:
   12, so narrative text between blocks cannot hijack the lines that follow.
 
 ### 🗂 2. Templates, Folders and Per-File Overrides
-- **Template Studio:** describe a sheet layout once — 12 categories × 5 fields — and reuse it
+- **Template Studio:** describe a sheet layout once — 12 categories × 7 fields — and reuse it
   across every file. Templates carry an optional logo image.
 - **Colour-accurate preview:** the fetched `.xlsx` renders as an HTML table with its original
   fill colours, font weights and alignment, read from SheetJS cell styles.
 - **Click-to-map:** click a mapping box, then click a cell in the preview. Mapped cells are
   outlined live in the grid.
 - **Nested workspace:** folders inside folders, file tiles with logos, bound accounts and
-  custom links (wiki, raws, comic).
+  custom links (wiki, raws, comic). Cards keep covers, names, template labels and links in
+  separate areas so text cannot overlap the artwork.
 - **Override, don't fork:** a file stores only the fields that differ from its template;
   inherited values show greyed as placeholders.
+- **Sheet-aware mappings:** choose a tab for each category in the template. At push time, the
+  writer matches that name in the selected target spreadsheet, including copied workbooks with
+  different internal IDs, then activates the matching tab before pasting.
+- **Character-only gender mapping:** a trailing `(M)`, `(F)` or `(M/F)` in a Character Names
+  target is extracted automatically and written to its dedicated mapped column; `(M/F)` is kept
+  as the unknown-gender value. A trailing `[New Term]` after a note is ignored.
 
-### ✍️ 3. Real Paste Writer with Self-Verification
+### ✍️ 3. Real Paste Writer
 - **Genuine <kbd>Ctrl</kbd>+<kbd>V</kbd>** via `Input.dispatchKeyEvent` with `commands: ["paste"]`,
   which invokes the renderer's own edit command — no hidden input to locate, no private class
   names to depend on.
 - **Keystroke fallback:** `Input.insertText`, then per-character `char` events, used
   automatically if paste is unavailable.
-- **Read-back verification:** the first write of every push is copied back off the grid with
-  <kbd>Ctrl</kbd>+<kbd>C</kbd> and compared. Reformatted values pass; an empty cell triggers
-  the fallback and, failing that, a precise error.
-- **Clipboard self-test** runs first, so an unreadable clipboard can never be mistaken for an
-  empty cell.
+- **Two-phase push:** use the downloaded workbook's numbered cells to check and reserve every
+  destination row first. Only after all checks finish does the writer move through the reserved
+  cells and paste; it does not inspect individual live cells while writing.
+- **First-paste settling:** allow the sheet selection and staged clipboard value to settle once
+  at the start of the write phase; later cells go straight to paste.
 - **Non-stealing window:** the sheet opens small and **unfocused** with
   `Emulation.setFocusEmulationEnabled`, so a push never grabs your keyboard or mouse.
-- **Never claims an unobservable write.** This is the core design rule.
 
 ### 🧮 4. Fuzzy Duplicate Prevention
 - **Normalised Levenshtein similarity** at a **0.88** threshold, compared against both the
@@ -148,8 +156,10 @@ So this extension splits the problem in two:
 - **Activity log:** every add, duplicate, skip and error with timestamps and level filters,
   written to be diagnostic rather than decorative.
 - **Stats:** 14-day trend lines and per-folder breakdowns via Chart.js.
-- **ZIP export/import:** per file, per folder or everything, snapshots included. Import
-  **merges** — it fills gaps and never clobbers local edits.
+- **ZIP export/import:** per file, per folder, per template or everything. Import
+  **merges** — it fills gaps and never clobbers local edits. JSON definitions and uploaded
+  images use user-defined names; remote spreadsheets and local snapshots are not bundled.
+- **Drag-and-drop organization:** move files and folders into folders or back to the workspace root.
 - **Dark and light glassmorphic UI.**
 
 ---
@@ -209,7 +219,7 @@ flowchart TD
 
     SW --> Shared
     SW --> Driver
-    SW <-->|"stage · read back"| Off
+    SW -->|"stage values for paste"| Off
     SW <-->|"read + write state"| Local
     SW <-->|"push in progress"| Session
     Dash <-->|"render state"| Local
@@ -246,39 +256,39 @@ sequenceDiagram
     D->>SW: RUN_PUSH job + selected entries
     SW->>G: GET export?format=xlsx with your cookies
     G-->>SW: .xlsx snapshot
-    Note over SW: SheetJS parse · pick sheet by live tab name
+    Note over SW: SheetJS parse · resolve tabs by gid/name
 
     SW->>T: windows.create small and UNFOCUSED
     SW->>T: debugger.attach + focus emulation
     SW->>T: wait until Name Box shows a selection
-    SW->>O: clipboard self-test round trip
-    O-->>SW: canPaste · canVerify
-
+    Note over SW: Phase 1 — pre-check every candidate destination
     loop for each queued term
         Note over SW: fuzzy duplicate check vs snapshot
-        Note over SW: findEmptyRow within startRow..endRow
+        Note over SW: findEmptyRow in snapshot within startRow..endRow
+        Note over SW: check mapped cell coordinates in downloaded workbook and reserve an empty row
+    end
+
+    Note over SW: Phase 2 — no more cell reads; write only to reserved destinations
+    loop for each reserved destination
         loop for each mapped column
             SW->>T: write ref into Name Box · press Enter
-            T-->>SW: Name Box confirms the cell
+            T-->>SW: Name Box moves to the destination
             SW->>O: stage value on clipboard
             SW->>T: Ctrl+V through the paste edit command
         end
     end
 
-    Note over SW,T: first write only — Ctrl+C the cell back and compare
+    Note over SW,T: failed writes remain queued; keep sheet open
     SW->>T: detach · optionally close the window
     SW-->>D: results added · duplicate · skipped
 ```
 
-### Verification outcomes
+### Pre-check outcomes
 
-| Read-back | Interpretation | Action |
+| Check | Interpretation | Action |
 | :--- | :--- | :--- |
-| Matches the value | Write path proven | Remaining writes skip verification |
-| Non-empty but reformatted | Sheets coerced a number or date — still a real write | Accepted, stored value logged |
-| Empty | Nothing landed | Switch the push to keystrokes, retry the cell |
-| Empty after both paths | Hard failure | Entry marked skipped with the exact cell and reason |
-| Clipboard self-test failed | Verification impossible | Logged plainly; writes proceed unverified |
+| Mapped snapshot cells contain values | Row is occupied in the downloaded workbook | Check the next row |
+| Mapped snapshot cells are empty | Destination is clear in the snapshot | Reserve it, finish all pre-checks, then write in the second phase |
 
 ---
 
@@ -294,9 +304,9 @@ stateDiagram-v2
     Queued --> Duplicate: similarity 0.88 or higher
     Queued --> RangeFull: no empty row before endRow
     Queued --> Unmapped: category has no columns
-    Queued --> Writing: first empty row claimed
-    Writing --> Added: read-back non-empty
-    Writing --> Failed: paste and typing both empty
+    Queued --> Writing: snapshot row reserved
+    Writing --> Added: values committed
+    Writing --> Failed: write failed
     Added --> [*]
     Duplicate --> [*]
     Skipped --> [*]
@@ -382,8 +392,12 @@ and add any per-file overrides.
 
 ### 6. Capture and push
 
-Paste your glossary text into **Queue**, tick the terms you want, and press
-**Push selected terms**. A small unfocused window fills the cells and closes.
+Paste your glossary text into **Queue** and click **Add to queue**. This only stages the terms.
+Select the terms and choose the glossary file (or use Speedrun), then press
+**Push selected terms**. The extension checks candidate cell coordinates in the downloaded
+workbook snapshot before writing, then commits values without inspecting individual live cells. A
+small unfocused sheet window stays open if a write fails; it closes after a clean push when that
+option is enabled.
 
 ---
 
@@ -403,7 +417,7 @@ block of lines.
 | Arrow | `→` `⇒` `->` `=>` |
 | Bullet | `-` `–` `—` `•` `*` |
 | Quotes | Straight, curly, or none |
-| Notes | The last trailing `(...)` or `[...]` group of the target |
+| Notes | The last trailing `(...)` or `[...]` group of the target; trailing `[New Term]` is ignored |
 | Emphasis | `**bold**` and `__italics__` are stripped before parsing |
 
 ### The missing-pair rule
@@ -434,7 +448,7 @@ Give this to an LLM when extracting terms from a chapter. The parser is built ar
 
 ```text
 **1. Character Names**
-* Character Name: - [KR/CH/JP/ID] "Source" → "Translation (Gender)"
+* Character Name: - [KR/CH/JP/ID] "Source" → "Translation (M) [Note: optional details]"
 
 **2. Titles/Honorifics**
 * Title: - [KR/CH/JP/ID] "Source" → "Translation"
@@ -501,13 +515,15 @@ reported as `Unknown category "…"` rather than guessed at. Add your own in
 
 ## 🎯 Column Mapping
 
-Each category takes up to five values:
+Each category can map seven values:
 
 | Field | Type | Meaning |
 | :--- | :--- | :--- |
 | **Source col** | Column letter | The original term, e.g. `B` |
 | **Target col** | Column letter | The translation, e.g. `C` |
-| **Notes col** | Column letter | The parenthetical note, e.g. `D` |
+| **Gender col** | Column letter | Character Names only; parsed from trailing `(M)`, `(F)` or `(M/F)` |
+| **Notes col** | Column letter | Optional note text, e.g. `D` |
+| **Sheet tab** | Workbook tab | Select the tab for this category; before a preview is fetched, blank uses the live URL's active tab |
 | **Start row** | Number | First data row, below your headers, e.g. `3` |
 | **End row** | Number, optional | The push stops rather than writing past it |
 
@@ -538,9 +554,9 @@ Opened from the toolbar icon. Six views, dark and light themes.
 
 | View | Contents |
 | :--- | :--- |
-| **▦ Workspace** | Nested folders and file tiles. A *file* is one live sheet plus its URL, bound account, template, overrides, logo and custom links. Right-click for open / edit / export / delete. |
-| **◧ Template Studio** | Column mappings, the colour-accurate preview, click-to-map, and template logos. |
-| **⌁ Queue** | Paste box, clipboard watcher toggle, the captured-terms table with per-row selection, and two push modes: **Workspace** (saved file) or **Speedrun** (URL + account + template, nothing saved). |
+| **▦ Workspace** | Nested folders and file tiles. A *file* is one live sheet plus its URL, bound account, template, overrides, logo and custom links. Right-click for open / edit / move / export / delete; drag items onto folders or breadcrumbs to move them. |
+| **◧ Template Studio** | Sheet-aware column mappings, the colour-accurate preview, click-to-map, and template logos. Templates can be exported on their own. |
+| **⌁ Queue** | Paste box, clipboard watcher toggle, captured-terms table with per-row selection, and two push modes: **Workspace** (choose a saved file) or **Speedrun** (URL + account + template, nothing saved). Adding terms stages them; pushing is a separate action. Speedrun keeps the chosen template for the current push and then returns to the first template. |
 | **☰ Activity log** | Every add, duplicate, skip and error with level filters. Capped at 2000 entries. |
 | **◔ Stats** | Terms added, duplicates prevented, skips — 14-day trends and per-folder bars. Capped at 20000 events. |
 | **⚙ Settings** | Account detection, clipboard watcher, close-window-after-push, full export, and erase all local data. |
@@ -583,7 +599,7 @@ columns of the offline snapshot.
 | `debugger` | The only way to deliver real keystrokes and edit commands to a canvas grid. Chrome shows a **"started debugging this browser"** banner while a push runs — this is unavoidable and expected. |
 | `scripting` | Reads the Name Box and the active sheet tab name from the Sheets page. |
 | `offscreen` | Gives the service worker a DOM for clipboard access. |
-| `clipboardRead` | The clipboard watcher, and reading a cell back to verify a write. |
+| `clipboardRead` | The clipboard watcher. |
 | `clipboardWrite` | Staging a value before <kbd>Ctrl</kbd>+<kbd>V</kbd>. |
 | `storage`, `unlimitedStorage` | Local state, including `.xlsx` snapshots and logo images. |
 | `tabs` | Opening and tracking the push window. |
@@ -603,11 +619,12 @@ State in `chrome.storage.local`:
 
 ```js
 templates  { id, name, logoBase64, targetPreviewUrl,
-             mappings: { [category]: { sourceCol, targetCol, notesCol, startRow, endRow } } }
+             mappings: { [category]: { sourceCol, targetCol, notesCol, genderCol,
+                                       sheetName, startRow, endRow } } }
 folders    { id, parentId, name, logoBase64 }
 files      { id, folderId, name, logoBase64, targetLiveUrl, boundAccountEmail,
              customLinks: [{ title, url }], templateId, overriddenMappings }
-queue      { id, category, source, target, notes, timestamp, lang, raw }
+queue      { id, category, source, target, notes, gender, timestamp, lang, raw }
 snapshots  { [templateId | fileId]: { b64, fetchedAt, size, ext } }   // offline .xlsx
 accounts   [{ index, email }]
 logs       { id, ts, level, message, … }      // newest first, capped at 2000
@@ -629,15 +646,21 @@ domain, but it *is* a heuristic — if a label looks wrong, the `/u/{n}/` index 
 
 ## 📦 Export and Import
 
-**Export** — per file, per folder, or everything — produces:
+**Export** — per file, per folder, per template, or everything — produces:
 
 ```text
 <name>.zip
-├── workspace_data.json     { version: 2, exportedAt, folders, templates, files }
-└── files/
-    ├── <fileId>.xlsx       saved snapshot per file
-    └── <templateId>.xlsx   saved snapshot per template
+├── workspace_data.json     { version: 3, folders, templates, files, settings }
+├── files/<folder path>/<user file name>.json
+├── folders/<parent path>/<user folder name>.json
+├── templates/<user template name>.json
+└── assets/                  uploaded icons and images, named after their items
 ```
+
+Each file definition stores its live Google Sheets URL, selected template, mapping overrides,
+folder, account, custom links and options. ZIPs never download or include remote spreadsheets
+or cached `.xlsx` snapshots. Template-only and single-file exports work without other active
+files; a file export includes its bound template. Archives also carry local settings.
 
 **Import merges, it does not overwrite:**
 
@@ -647,7 +670,7 @@ domain, but it *is* a heuristic — if a label looks wrong, the `/u/{n}/` index 
 | Folder with a matching id | Left untouched |
 | File with a matching id, or same folder + same sheet URL | Gains missing custom links and mappings; local edits win |
 | New file, folder or template | Added |
-| Snapshot missing locally | Restored from the ZIP |
+| Snapshot missing locally | The next preview or push fetches a fresh workbook from Google |
 | Parent folder absent from the ZIP | Re-homed to the workspace root instead of orphaned |
 
 ---
@@ -702,10 +725,7 @@ Check the **Activity log** first — messages are written to be diagnostic.
 | `No mapping for "X"` | That category has no columns in the template or overrides. **Most common cause of a push that adds nothing.** |
 | `Range Full — X has no empty row before 250` | The category's `endRow` was reached. Raise it or extend the sheet. |
 | `Could not move to C3 (Sheets is on A1)` | Name Box navigation failed — usually a protected range or the wrong tab being active. |
-| `Ctrl+V left C3 empty — switching this push to keystrokes` | Paste was blocked; the fallback took over. Writes continue. |
-| `Neither Ctrl+V nor typing put anything into C3` | Both paths failed. Confirm the bound account can edit the sheet. |
-| `Clipboard read-back is unavailable` | Writes proceed but are unverified this run. |
-| `Sheets stored "…" for "…"` | The value landed but was reformatted — check that column's number format. |
+| `Could not move to …` | Name Box navigation failed — check that the selected tab is available and the target range can be edited. |
 | `no Sheets grid on that tab (it is showing "…")` | The tab is not a loaded spreadsheet, often a sign-in page. |
 | `Google asked this account to sign in` | Sign in to that account, or choose another in Settings. |
 | `Sheet download failed … direct: sign-in page` | The snapshot could not be fetched. Confirm the chosen `/u/{n}/` account can open the file. |
@@ -736,8 +756,8 @@ Check the **Activity log** first — messages are written to be diagnostic.
   `chrome.debugger`.
 - **Chromium only.** `chrome.debugger` and offscreen documents have no Firefox or Safari
   equivalent.
-- **Multi-tab workbooks** are matched by the live tab's name, because an `.xlsx` export
-  carries no `gid`. Two identically named tabs fall back to the first.
+- **Multi-tab workbooks** use the template's mapped tab names to locate matching tabs in the
+  selected target workbook. The target workbook's own internal IDs are handled automatically.
 - **Values are pasted, not escaped.** A term beginning with `=` or `+` becomes a formula,
   exactly as it would if you typed it.
 - **No automated test suite yet.** Syntax checks and a standalone parser harness only — see
@@ -797,15 +817,16 @@ JSON.stringify({
 })
 ```
 
-`nameBox` and `cell` **must** be present for navigation to work. The rest only affect write
-verification and sheet-name matching, and degrade gracefully.
+`nameBox` and `cell` **must** be present for navigation to work. `activeTab` helps inspect which
+tab the live sheet has selected.
 
 ### Conventions
 
 - `shared.js` must never touch the DOM — the service worker imports it.
 - `background.js` decides **what** to write; `sheets-driver.js` decides **how**. Keep protocol
   calls out of the orchestration layer.
-- Never report a write that cannot be observed.
+- Keep row selection in `background.js` based on numbered cells in the downloaded workbook;
+  keep the write phase free of per-cell occupancy reads.
 - Bump `version` in `manifest.json` with behaviour changes, so a reload is visible.
 
 ---

@@ -137,11 +137,13 @@ function tile({ logo, name, meta, badge, links = [], onOpen, onCtx }) {
   const el = document.createElement("div");
   el.className = "tile glass";
   el.innerHTML = `
+    <div class="tile-top">${badge ? `<span class="badge">${esc(badge)}</span>` : ""}</div>
     <div class="logo">${logo ? `<img src="${logo}" alt="">` : esc((name || "?").slice(0, 1).toUpperCase())}</div>
-    ${badge ? `<span class="badge">${esc(badge)}</span>` : ""}
-    <div class="name">${esc(name)}</div>
-    <div class="meta">${esc(meta)}</div>
-    ${links.length ? `<div class="links">${links.map(l => `<a href="${esc(l.url)}" target="_blank" rel="noreferrer">${esc(l.title || "link")}</a>`).join("")}</div>` : ""}`;
+    <div class="tile-copy">
+      <div class="name" title="${esc(name)}">${esc(name)}</div>
+      <div class="meta" title="${esc(meta)}">${esc(meta)}</div>
+      ${links.length ? `<div class="links">${links.map(l => `<a href="${esc(l.url)}" target="_blank" rel="noreferrer">${esc(l.title || "link")}</a>`).join("")}</div>` : ""}
+    </div>`;
   el.onclick = (e) => { if (e.target.tagName !== "A") onOpen(); };
   el.oncontextmenu = (e) => { e.preventDefault(); onCtx(e.clientX, e.clientY); };
   return el;
@@ -307,7 +309,14 @@ function mappingGridHtml(mappings, base = null) {
     return `<div class="map-row"><label title="${esc(c)}">${esc(c)}</label>` + MAP_FIELDS.map(f => {
       const val = m[f.key] ?? "";
       const ph = b[f.key] != null && b[f.key] !== "" ? String(b[f.key]) : (f.optional ? "—" : "");
-      if (f.kind === "sheet") return `<select data-cat="${esc(c)}" data-k="${f.key}" data-sheet-map data-map-value="${esc(val)}"><option value="" disabled>Choose sheet…</option></select>`;
+      if (f.kind === "sheet") {
+        const inheritedSheet = !val && b.sheetName ? b.sheetName : "";
+        const emptyLabel = inheritedSheet ? `Template: ${inheritedSheet}` : "Choose sheet…";
+        const initialOption = val
+          ? `<option value="${esc(val)}">${esc(val)}</option>`
+          : `<option value="">${esc(emptyLabel)}</option>`;
+        return `<select data-cat="${esc(c)}" data-k="${f.key}" data-sheet-map data-map-value="${esc(val)}" data-map-inherited="${esc(inheritedSheet)}">${initialOption}</select>`;
+      }
       const genderDisabled = f.key === "genderCol" && c !== "Character Names";
       return `<input type="${f.kind === "row" ? "number" : "text"}" data-cat="${esc(c)}" data-k="${f.key}"
         value="${esc(val)}" placeholder="${esc(ph)}" ${genderDisabled ? "disabled" : ""} ${f.kind === "col" ? 'maxlength="3"' : 'min="1"'}>`;
@@ -337,6 +346,7 @@ function templateEditor(id) {
         <div class="field"><label>Google account to fetch with</label><select id="tAcct"></select></div>
         <div class="row" style="margin-bottom:16px"><button class="btn" id="tFetch">Fetch preview</button><span class="muted" id="tInfo"></span></div>
         <label class="muted" style="font-size:13px">Mappings — click an input, then click a cell in the preview to fill it.</label>
+        <div class="mapping-help">Template tab names are matched by name in the target glossary, so spreadsheet copies with different internal IDs work too.</div>
         <div id="tMap" style="margin-top:8px">${mappingGridHtml(t.mappings)}</div>
         <button class="btn primary" id="tSave" style="margin-top:16px">Save template</button>
       </div>
@@ -412,9 +422,14 @@ function renderXlsx(snapshot, host, tabsEl, getMappings) {
   previewCtx = { wb, host, getMappings, sheetName: wb.SheetNames[0] };
   $$('[data-sheet-map]').forEach(sel => {
     const current = sel.value || sel.dataset.mapValue;
-    sel.innerHTML = wb.SheetNames.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
-    const selected = wb.SheetNames.includes(current) ? current : wb.SheetNames[0];
-    if (selected) { sel.value = selected; sel.dataset.mapValue = selected; sel.title = selected; }
+    const inherited = sel.dataset.mapInherited || "";
+    const keepInherited = !current && !!inherited;
+    const emptyLabel = inherited ? `Template: ${inherited}` : "Choose sheet…";
+    sel.innerHTML = `<option value="">${esc(emptyLabel)}</option>` + wb.SheetNames.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    const selected = wb.SheetNames.includes(current) ? current : (keepInherited ? "" : wb.SheetNames[0] || "");
+    sel.value = selected;
+    sel.dataset.mapValue = selected;
+    sel.title = selected || emptyLabel;
     sel.onchange = () => { sel.dataset.mapValue = sel.value; sel.title = sel.value; };
   });
   if (wb.SheetNames.length) drawSheet(wb.SheetNames[0]);
@@ -521,6 +536,7 @@ function fileEditor(id) {
         <div class="field"><label>Custom links (wiki, comic, raws…)</label><div id="xLinks"></div>
           <button class="btn ghost" id="xAddLink" style="align-self:flex-start">Add link</button></div>
         <label class="muted" style="font-size:13px">Overrides — blank means "use the template value" (shown greyed).</label>
+        <div class="mapping-help">The selected template's tab names are matched to this file's spreadsheet. You can override a tab here if its name differs.</div>
         <div id="xMap" style="margin-top:8px"></div>
         <div class="row" style="margin-top:16px"><button class="btn primary" id="xSave">Save file</button>
           <button class="btn ghost" id="xOpen">Open sheet</button></div>
@@ -792,6 +808,12 @@ async function exportZip(scope) {
   const putDefinition = (kind, item, path) => {
     const data = { ...item };
     delete data.logoBase64;
+    // Cached workbook downloads stay local for previews and row finding; they
+    // are never part of an exported definition or workspace archive.
+    delete data.snapshot;
+    delete data.snapshotFile;
+    delete data.snapshotBase64;
+    delete data.snapshotB64;
     const assetPath = path ? `${path}/` : "";
     const logoAsset = item.logoBase64 ? `assets/${kind}/${assetPath}${safe(item.name)}.${imageExt(item.logoBase64)}` : null;
     data.logoAsset = logoAsset;

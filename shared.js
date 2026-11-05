@@ -101,18 +101,26 @@ function parseGlossaryText(text) {
     const lang = m[2].toUpperCase().replace(/\s/g, "");
     const source = unquote(m[3]);
     let target = unquote(m[4]), notes = "", gender = "";
+    // [New Term] is a source annotation, not part of the glossary note/target.
+    // Remove it before parsing trailing note and gender markers.
+    target = target.replace(/\s*\[\s*New\s+Term\s*\]\s*$/i, "").trim();
     // Notes = LAST trailing (...) or [...] chunk; bracket notes may contain parentheses.
     const nm = target.match(/^([\s\S]*?)\s*\[([^\]]*)\]\s*$/)
       || target.match(/^([\s\S]*?)\s*\(([^()]*)\)\s*$/);
-    if (nm && category === "Character Names" && /^[MF]$/i.test(nm[2].trim())) {
+    const genderLabel = /^(?:M|F|M\s*\/\s*F)$/i;
+    if (nm && category === "Character Names" && genderLabel.test(nm[2].trim())) {
       target = nm[1].trim(); gender = nm[2].trim().toUpperCase();
-    } else if (nm && !/^[MF]$/i.test(nm[2].trim())) {
+      gender = gender.replace(/\s+/g, "");
+    } else if (nm) {
       target = nm[1].trim(); notes = nm[2].trim().replace(/^notes?\s*:\s*/i, "");
     }
     // Character gender is encoded after the translated name, before an optional note.
     if (!gender && category === "Character Names") {
-      const gm = target.match(/\s*\(([MF])\)\s*$/i);
-      if (gm) { gender = gm[1].toUpperCase(); target = target.slice(0, gm.index).trim(); }
+      const gm = target.match(/\s*(?:\(\s*(M\s*\/\s*F|M|F)\s*\)|\[\s*(M\s*\/\s*F|M|F)\s*\])\s*$/i);
+      if (gm) {
+        gender = (gm[1] || gm[2]).replace(/\s+/g, "").toUpperCase();
+        target = target.slice(0, gm.index).trim();
+      }
     }
     target = target.replace(/^["“”']|["“”']$/g, "").trim();
 

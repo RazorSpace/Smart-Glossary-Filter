@@ -194,93 +194,35 @@ function columnValues(sheet, col, startRow) {
  * A real Ctrl+V is the primary path: the clipboard is staged in the
  * offscreen document, then the renderer pastes it exactly as it would for a
  * human. Keystroke typing is the fallback.
- * The FIRST write of a push is read back off the grid (Ctrl+C → clipboard),
- * so a broken write path fails loudly on term #1 instead of quietly leaving
- * 200 rows empty. Once one write is proven, the rest skip the check.
+ * The downloaded workbook snapshot is checked by cell coordinates before
+ * writing begins. The write phase only visits reserved cells and pastes.
  * ===================================================================== */
-const sameText = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();
-
 async function clipboardSet(text) {
   if (!await ensureOffscreen()) return false;
   const r = await chrome.runtime.sendMessage({ type: "OFFSCREEN_WRITE", text }).catch(() => null);
   return !!r?.ok;
 }
-async function clipboardGet() {
-  if (!await ensureOffscreen()) return "";
-  const r = await chrome.runtime.sendMessage({ type: "OFFSCREEN_READ" }).catch(() => null);
-  return r?.text || "";
-}
-/* Copy the selected cell and read it — the only way to see inside a canvas
-   grid that doesn't depend on Sheets' private class names. */
-async function readSelectedCell(tabId) {
-  // Replace the staged glossary text before copying. If Sheets ignores Ctrl+C,
-  // the sentinel lets us detect that instead of mistaking stale clipboard data
-  // for a successful write/read-back.
-  const marker = `gf-copy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  if (!await clipboardSet(marker)) return null;
-  await sheetsCopy(tabId);
-  const copied = await clipboardGet();
-  if (copied === marker) return null;
-  return copied.replace(/\r/g, "").replace(/\n+$/, "");
-}
-async function readLiveCell(tabId, cell) {
-  const at = await sheetsGotoCell(tabId, cell);
-  if (at !== cell) return { ok: false, reason: `Could not inspect ${cell} (Sheets is on ${at || "?"})` };
-  const value = await readSelectedCell(tabId).catch(() => null);
-  if (value == null) return { ok: false, reason: `Could not read ${cell} from the live sheet` };
-  return { ok: true, value };
-}
-
-/* Does the clipboard round-trip inside the extension at all? Without this,
-   a cell that reads back empty would be indistinguishable from a clipboard
-   we simply cannot read — and we'd blame the sheet for our own blindness. */
-async function clipboardSelfTest() {
-  const probe = `gf-probe-${Date.now()}`;
-  const canPaste = await clipboardSet(probe);
-  const canVerify = canPaste ? (await clipboardGet()).trim() === probe : false;
-  return { canPaste, canVerify };
-}
-
 async function writeCell(tabId, cell, value, state) {
   const text = String(value ?? "").replace(/[\r\n\t]+/g, " ").trim();
   if (!text) return { ok: false, reason: "empty value" };
-
-  const go = async () => {
-    const at = await sheetsGotoCell(tabId, cell);
-    return at === cell ? null : `Could not move to ${cell} (Sheets is on ${at || "?"})`;
-  };
-  const put = async () => {
-    if (state.mode === "paste") {
-      if (await clipboardSet(text)) { await sheetsPaste(tabId); return; }
-      state.mode = "type";
-      await addLog("info", "Could not stage the clipboard — using keystrokes instead.");
-    }
-    await sheetsTypeValue(tabId, text);
-  };
-
-  let moved = await go();
-  if (moved) return { ok: false, reason: moved };
-  await put();
-  /* Verify each cell. A non-empty read-back alone is not proof: it may be
-     the old value from a cell where paste failed. */
-  moved = await go();
-  const back = moved ? null : await readSelectedCell(tabId).catch(() => null);
-  if (back != null && sameText(back, text)) {
-    state.proven = true;
-    return { ok: true };
-  }
-
+  const at = await sheetsGotoCell(tabId, cell);
+  if (at !== cell) return { ok: false, reason: `Could not move to ${cell} (Sheets is on ${at || "?"})` };
+  const firstPaste = !!state.firstPaste;
+  state.firstPaste = false;
+  // Let the first selection and clipboard update settle once per push. Later
+  // cells go straight from their mapped coordinate to paste.
+  if (firstPaste) await new Promise(r => setTimeout(r, 180));
   if (state.mode === "paste") {
-    await addLog("info", `Could not verify the value in ${cell} after Ctrl+V — retrying with keystrokes.`);
+    if (await clipboardSet(text)) {
+      if (firstPaste) await new Promise(r => setTimeout(r, 100));
+      await sheetsPaste(tabId);
+      return { ok: true };
+    }
     state.mode = "type";
-    if (await go()) return { ok: false, reason: `Could not return to ${cell}` };
-    await sheetsTypeValue(tabId, text);
-    if (await go()) return { ok: false, reason: `Could not return to ${cell}` };
-    const typed = await readSelectedCell(tabId).catch(() => null);
-    if (typed != null && sameText(typed, text)) { state.proven = true; return { ok: true }; }
-    return { ok: false, reason: typed == null ? `Could not read back ${cell}; the write was not verified` : `The value in ${cell} did not match the glossary term after typing` };
+    await addLog("info", "Could not stage the clipboard — using keystrokes instead.");
   }
-  return { ok: false, reason: back == null ? `Could not read back ${cell}; the write was not verified` : `The value in ${cell} did not match the glossary term after typing` };
+  await sheetsTypeValue(tabId, text);
+  return { ok: true };
 }
 
 /* =====================================================================
@@ -296,7 +238,7 @@ async function runPush(job, entries) {
   // Pick the sheet matching ?gid= when we can, else the first one.
   let sheetName = wb.SheetNames[0];
   if (p?.gid && wb.Workbook?.Sheets) {
-    const hit = wb.Workbook.Sheets.findIndex(s => String(s.Hidden) === "0" && String(s.sheetId ?? "") === String(p.gid));
+    const hit = wb.Workbook.Sheets.findIndex(s => String(s.sheetId ?? "") === String(p.gid));
     if (hit >= 0 && wb.SheetNames[hit]) sheetName = wb.SheetNames[hit];
   }
 
@@ -316,21 +258,14 @@ async function runPush(job, entries) {
     throw new Error(`Could not control the sheet tab: ${err.message}.`);
   }
 
-  /* An .xlsx carries no gid, so the tab we are about to type into is the only
-     reliable way to know which sheet the empty-row search should read. */
-  const liveName = await sheetsActiveTabName(tab.id).catch(() => null);
-  if (liveName && wb.Sheets[liveName]) sheetName = liveName;
-  else if (liveName && liveName !== sheetName) await addLog("info", `Live tab "${liveName}" isn't in the downloaded copy — reading "${sheetName}" instead.`);
   const results = [];
   const takenByCat = {};
   const byCat = {};
-  /* Shared across the whole push: which write path we're on, and whether one
-     write has been confirmed against the grid. */
+  /* Phase 1 checks/reserves destinations from the workbook snapshot only.
+     Phase 2 navigates to reserved cells and writes values. */
+  const pendingWrites = [];
   await chrome.storage.session.set({ pushing: true }); // don't re-read our own staging
-  const probe = await clipboardSelfTest();
-  const writeState = { mode: probe.canPaste ? "paste" : "type", proven: !probe.canVerify };
-  if (!probe.canPaste) await addLog("info", "Clipboard staging is unavailable — typing values with keystrokes instead of Ctrl+V.");
-  else if (!probe.canVerify) await addLog("error", "Clipboard read-back is unavailable — live row checks will stop before writing to prevent unverified changes.");
+  const writeState = { mode: "paste", firstPaste: true };
   for (const e of entries) (byCat[e.category] ||= []).push(e);
 
   for (const [category, list] of Object.entries(byCat)) {
@@ -345,11 +280,10 @@ async function runPush(job, entries) {
       list.forEach(e => results.push({ id: e.id, source: e.source, status: "skipped", reason: `Sheet tab "${categorySheetName}" is not in the workbook snapshot` }));
       continue;
     }
-    try { await sheetsSelectTab(tab.id, categorySheetName); }
-    catch (err) {
-      list.forEach(e => results.push({ id: e.id, source: e.source, status: "skipped", reason: err.message }));
-      continue;
-    }
+    const sheetIndex = wb.SheetNames.indexOf(categorySheetName);
+    // The template contributes the tab name only. Resolve the live gid from
+    // this selected target workbook so copied spreadsheets can use new IDs.
+    const categorySheetId = sheetIndex >= 0 ? wb.Workbook?.Sheets?.[sheetIndex]?.sheetId : null;
     const taken = (takenByCat[category] ||= new Set());
     const existingSrc = columnValues(sheet, map.sourceCol, map.startRow);
     const existingTgt = columnValues(sheet, map.targetCol, map.startRow);
@@ -364,76 +298,63 @@ async function runPush(job, entries) {
         continue;
       }
 
-      // Find a row that is empty both in the downloaded snapshot and on the
-      // live grid. A stale export must never make us overwrite an occupied row.
-      let row = null, rowError = null, liveDuplicate = null;
-      const mappedCols = [...new Set([map.sourceCol, map.targetCol, map.genderCol, map.notesCol].filter(Boolean))];
-      for (let attempt = 0; attempt < 1000; attempt++) {
-        const spot = findEmptyRow(sheet, map, taken);
-        if (spot.full) { rowError = `Range Full — ${category} has no empty row before ${map.endRow}`; break; }
-        if (spot.error) { rowError = spot.error; break; }
-        const candidate = spot.row;
-        taken.add(candidate);
-        let occupied = false;
-        for (const col of mappedCols) {
-          const cell = `${String(col).toUpperCase()}${candidate}`;
-          let live;
-          try { live = await readLiveCell(tab.id, cell); }
-          catch (err) { rowError = `Could not inspect ${cell}: ${err.message}`; break; }
-          if (!live.ok) { rowError = live.reason; break; }
-          if (live.value.trim()) {
-            sheet[XLSX.utils.encode_cell({ r: candidate - 1, c: colToIndex(col) })] = { t: "s", v: live.value };
-            if (col === map.sourceCol) existingSrc.push({ row: candidate, value: live.value });
-            if (col === map.targetCol) existingTgt.push({ row: candidate, value: live.value });
-            if (col === map.sourceCol || col === map.targetCol) {
-              const score = Math.max(similarity(e.source, live.value), similarity(e.target, live.value));
-              if (score >= DUP_THRESHOLD) liveDuplicate = { value: live.value, score };
-            }
-            occupied = true;
-            break;
-          }
-        }
-        if (liveDuplicate) break;
-        if (rowError) break;
-        if (!occupied) { row = candidate; break; }
-      }
-      if (liveDuplicate) {
-        results.push({ id: e.id, source: e.source, status: "duplicate", match: liveDuplicate.value, score: liveDuplicate.score });
+      // Pick an empty destination using the downloaded workbook's numbered
+      // cell coordinates. No live cell inspection is done during the push.
+      const spot = findEmptyRow(sheet, map, taken);
+      if (spot.full) {
+        results.push({ id: e.id, source: e.source, status: "skipped", reason: `Range Full — ${category} has no empty row before ${map.endRow}` });
         continue;
       }
-      if (row == null) {
-        const reason = rowError || "Could not find a verified empty row in the live sheet";
-        results.push({ id: e.id, source: e.source, status: /inspect|read/i.test(reason) ? "error" : "skipped", reason });
+      if (spot.error) {
+        results.push({ id: e.id, source: e.source, status: "skipped", reason: spot.error });
         continue;
       }
+      const row = spot.row;
+      taken.add(row);
 
-      // --- navigate to each mapped cell and dispatch a paste ---
-      const writes = [
-        [map.sourceCol, e.source],
-        [map.targetCol, e.target],
-        [map.genderCol, e.gender],
-        [map.notesCol, e.notes]
-      ].filter(([c, v]) => c && v);
-
-      let wrote = 0, note = "";
-      for (const [col, value] of writes) {
-        const cell = `${String(col).toUpperCase()}${row}`;
-        try {
-          const r = await writeCell(tab.id, cell, value, writeState);
-          if (!r.ok) { note = r.reason; continue; }
-          wrote++;
-          // Mark the cell in our in-memory snapshot so the next entry moves down.
-          sheet[XLSX.utils.encode_cell({ r: row - 1, c: colToIndex(col) })] = { t: "s", v: value };
-        } catch (err) { note = `Writing ${cell} failed: ${err.message}`; }
+      // Reserve this row in the in-memory workbook so later entries select
+      // the next empty numbered row. Pasting starts only after this pass.
+      existingSrc.push({ row, value: e.source });
+      existingTgt.push({ row, value: e.target });
+      for (const [col, value] of [
+        [map.sourceCol, e.source], [map.targetCol, e.target],
+        [map.genderCol, e.gender], [map.notesCol, e.notes]
+      ]) {
+        if (col && value) sheet[XLSX.utils.encode_cell({ r: row - 1, c: colToIndex(col) })] = { t: "s", v: value };
       }
+      pendingWrites.push({ map, sheet, sheetName: categorySheetName, sheetId: categorySheetId, entry: e, row });
+    }
+  }
 
-      if (wrote && !note) {
-        existingSrc.push({ row, value: e.source });
-        existingTgt.push({ row, value: e.target });
-        results.push({ id: e.id, source: e.source, target: e.target, status: "added", cell: `${String(map.sourceCol || map.targetCol).toUpperCase()}${row}` });
-      } else {
-        results.push({ id: e.id, source: e.source, status: "error", reason: note || "Paste was not verified" });
-      }
+  // Phase 2: no cell checks here. All target rows were selected from the
+  // snapshot and reserved above; now visit each destination and paste.
+  for (const plan of pendingWrites) {
+    const { map, sheet, sheetName: targetSheetName, sheetId, entry: e, row } = plan;
+    try { await sheetsSelectTab(tab.id, targetSheetName, sheetId); }
+    catch (err) {
+      results.push({ id: e.id, source: e.source, status: "error", reason: err.message });
+      continue;
+    }
+    const writes = [
+      [map.sourceCol, e.source],
+      [map.targetCol, e.target],
+      [map.genderCol, e.gender],
+      [map.notesCol, e.notes]
+    ].filter(([c, v]) => c && v);
+    let wrote = 0, note = "";
+    for (const [col, value] of writes) {
+      const cell = `${String(col).toUpperCase()}${row}`;
+      try {
+        const r = await writeCell(tab.id, cell, value, writeState);
+        if (!r.ok) { note = r.reason; continue; }
+        wrote++;
+        sheet[XLSX.utils.encode_cell({ r: row - 1, c: colToIndex(col) })] = { t: "s", v: value };
+      } catch (err) { note = `Writing ${cell} failed: ${err.message}`; }
+    }
+    if (wrote && !note) {
+      results.push({ id: e.id, source: e.source, target: e.target, status: "added", cell: `${String(map.sourceCol || map.targetCol).toUpperCase()}${row}` });
+    } else {
+      results.push({ id: e.id, source: e.source, status: "error", reason: note || "Paste failed" });
     }
   }
 
