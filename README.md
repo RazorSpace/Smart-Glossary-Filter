@@ -29,8 +29,6 @@ driving the real page — a Name Box jump and a true <kbd>Ctrl</kbd>+<kbd>V</kbd
 There is no server, no OAuth app, no API key and no telemetry. Sheets are read through the
 Google session already in your browser, and written the way a person would write them.
 
-For the changes in version 1.1, see [UPDATES_v1.1.md](UPDATES_v1.1.md).
-
 ---
 
 ## 📑 Table of Contents
